@@ -1,4 +1,4 @@
-# tissue_mnist 4-kernel capacity-sweep config (default topology set)
+# tissue_mnist 4-kernel capacity-sweep config, digital-ZZ (test-scored probe set, probe_tissue.py topologies)
 dataset:
   name: tissue_mnist
   data_root: ./data

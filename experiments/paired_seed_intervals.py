@@ -1,46 +1,22 @@
-"""Paired-over-seeds confidence intervals for every "tie" / "no difference" claim.
+"""Paired-over-seeds intervals for the pre-specified contrasts (end-to-end table,
+capacity sweep, validation-selected camp margins).
 
-Reviewer 4 (#3) objects that overlapping standard deviations do not establish
-equivalence, and asks for paired confidence intervals on AUC differences or an
-equivalence test with a pre-specified margin. This script supplies both from
-data that already exists: every reported cell was validated over 10 seeds (5 on
-TissueMNIST end-to-end), and `set_seed(s)` seeds python/numpy/torch globally
-before each run, so seed s is a shared nuisance factor across models and the
-per-seed AUCs can be differenced within seed.
+Seed s seeds python/numpy/torch before each run, so the per-seed AUCs of two
+models are differenced within seed and given a paired t interval (a percentile
+bootstrap over 10 seeds cannot be wider than the observed range). The intervals
+cover retraining variability only; every model is scored on the same test split.
 
-WHAT THIS DOES AND DOES NOT COVER. The pairing is over *training seeds*: it
-answers "would this difference survive retraining?". It does NOT cover
-test-example variance, which is what a DeLong or example-level bootstrap would
-add, because no per-example predictions were ever saved (cells keep aggregates
-plus per-seed scalars). Every model is scored on the same fixed MedMNIST test
-split, so the test-sample noise is common to all arms and is invisible here.
-An example-level interval needs re-inference at the already-known best
-hyperparameters; the cost is printed at the end of this run so the trade can be
-decided with a number rather than a guess.
+Equivalence margin, fixed in advance: DELTA = 0.01 AUC (and accuracy). A
+contrast is "equivalent" when the 90% CI lies inside (-DELTA, +DELTA) (TOST at
+alpha = 0.05) and "non-zero" when the 95% CI excludes 0; the two verdicts are
+independent. These are per-claim intervals, not a family-wise corrected screen.
 
-Why a t interval and not a bootstrap over seeds: a percentile bootstrap over 10
-values cannot produce an interval wider than the observed range, so with n=10 it
-is anticonservative exactly where honesty matters. The paired t interval is the
-right instrument at this sample size.
+First, every mapped end-to-end run must reproduce its published Table III cell.
 
-PRE-SPECIFIED EQUIVALENCE MARGIN: delta = 0.01 AUC (and 0.01 accuracy), fixed
-here before any contrast was computed. It is one point of AUC, the granularity
-at which the paper's tables report, and it is applied uniformly to every
-contrast. Equivalence is declared by TOST: the two one-sided tests at alpha=0.05
-pass exactly when the 90% CI of the paired difference lies inside (-delta,
-+delta). A difference is called non-zero when the 95% CI excludes 0. The two
-verdicts are independent, so a contrast can be both (a real difference smaller
-than the margin) or neither (underpowered).
-
-MULTIPLICITY: the contrast list below is pre-specified and each entry maps to a
-named sentence in the paper. These are per-claim intervals, not a family-wise
-corrected screen, and no contrast that is not tied to a sentence should be read
-for significance.
-
-Run from the repo root:
     python experiments/paired_seed_intervals.py
-Writes outputs/camera_ready/paired_seed_intervals.csv (gitignored).
+Writes outputs/camera_ready/paired_seed_intervals.csv.
 """
+import argparse
 import csv
 import json
 import math
@@ -53,17 +29,14 @@ from scipy import stats
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from val_selected_margins import (ROOT, HEADS, QUANTUM, CLASSICAL, DATASETS,
                                   load_cells, pick)
+sys.path.insert(0, ROOT)
+from src.utils.stats import paired_t_interval
 
-DELTA = 0.01          # pre-specified equivalence margin, see module docstring
+DELTA = 0.01          # equivalence margin
 CI_LEVEL = 0.95       # for the "is it non-zero" verdict
 TOST_LEVEL = 0.90     # 90% CI <=> two one-sided tests at alpha=0.05
 
-# ---------------------------------------------------------------------------
-# End-to-end runs (Table III). Each row is identified by the winning trial's
-# params, not by base_config.yml, which is stale in several run directories.
-# PAPER_AUC/PAPER_ACC below re-derive the published cell from the same file, so
-# a mis-mapped directory fails loudly instead of producing a plausible interval.
-# ---------------------------------------------------------------------------
+# run directory of every Table III cell
 E2E = {
     ("BreastMNIST", "Digital-Z 1k"):     "outputs/paper_results/hp_search/outputs/hp_search_original_breastmnist_20260518_171036",
     ("BreastMNIST", "Digital-ZZ 1k"):    "outputs/paper_results/hp_search/hp_search_original_breastmnist_20260518_184203",
@@ -108,9 +81,7 @@ E2E = {
     ("TissueMNIST", "Raw pixels"):       "outputs/mcc_retrieved/hp_search/tissue_mnist/raw",
 }
 
-# Published Table III cells, transcribed from docs/paper/paper_extended.tex, as
-# (acc, auc) rounded to three decimals. The control: every mapped directory must
-# reproduce its own published cell.
+# published Table III cells, (acc, auc) to three decimals
 PAPER_TABLE = {
     ("BreastMNIST", "Digital-Z 1k"): (0.848, 0.868),
     ("BreastMNIST", "Digital-ZZ 1k"): (0.855, 0.883),
@@ -153,8 +124,7 @@ PAPER_TABLE = {
     ("TissueMNIST", "Raw pixels"): (0.598, 0.886),
 }
 
-# Pre-specified end-to-end contrasts, one per claim in Sec. results_endtoend.
-# (id, dataset, model_a, model_b, the sentence it tests)
+# (id, dataset, model_a, model_b, the claim it tests), one per claim in the paper
 E2E_CONTRASTS = [
     ("E1-breast", "BreastMNIST", "Digital-ZZ 4k", "Random x45",
      "best quantum vs best classical: +0.005 AUC, -0.012 acc (frozen Random x45, 2026-09-20)"),
@@ -177,8 +147,7 @@ E2E_CONTRASTS = [
      "'even raw pixels outperform every quantum model'"),
 ]
 
-# Pre-specified capacity-sweep contrasts, one per claim in Sec. results_capacity.
-# (id, dataset, head, source_a, source_b, sentence)
+# (id, dataset, head, source_a, source_b, claim)
 CAP_CONTRASTS = [
     ("C2-tissue-4k", "TissueMNIST", "linear", "digital_zz_4k", "rff_180",
      "the +0.014 low-capacity exception, the paper's one positive quantum result"),
@@ -194,25 +163,19 @@ CAP_CONTRASTS = [
      "'+0.008 on PneumoniaMNIST at MLP-1 ... above one standard deviation'"),
     ("C4-pneumonia-mlp2", "PneumoniaMNIST", "mlp2", "digital_zz_1k", "random_45",
      "'+0.010 on PneumoniaMNIST at MLP-2 ... above one standard deviation'"),
-    # Added 2026-09-27 (audit item FM-6): the paper already quoted this interval,
-    # computed outside this list, so it was added after its value was known.
+    # added after the paper had quoted its value
     ("C5-breast-mlp1", "BreastMNIST", "mlp1", "analog_zz_4k", "rff_180",
      "'Analog-ZZ: -0.030 to +0.022, the latter at BreastMNIST MLP-1, paired interval [+0.003,+0.042]'"),
 ]
 
 
 def half_up3(x):
-    """Round to three decimals half-up, the convention a printed table uses.
-
-    Python's round() is half-to-even and its float arguments are rarely exact
-    halves anyway, so comparing published cells needs this stated explicitly.
-    """
+    """Round half-up to three decimals, as a printed table does (round() is half-to-even)."""
     return float(Decimal(repr(x)).quantize(Decimal("0.001"), rounding=ROUND_HALF_UP))
 
 
-# The BreastMNIST / PneumoniaMNIST "Random x45 / x180" validations were trained
-# with trainable filters by mistake (tracker, 2026-09-20). Their per-seed values
-# come from the frozen-filter re-validation instead of the original run dir.
+# the BreastMNIST / PneumoniaMNIST Random rows come from the frozen-filter
+# re-validation (e2e_random_fixed_revalidate.py), not from their search runs
 FIXED_RANDOM = {
     E2E[(d, m)]: os.path.join("outputs", "camera_ready", "e2e_random_fixed",
                               f"{d}__{m.replace(' ', '_')}", "summary.json")
@@ -232,29 +195,18 @@ def load_e2e(path):
 
 
 def paired(a, b):
-    """Paired statistics for two equal-length per-seed vectors, a minus b.
-
-    Returns the mean difference, the paired SD, the 95% CI (is it non-zero?),
-    the 90% CI (TOST at alpha=0.05 against the pre-specified margin), and two
-    diagnostics of whether the pairing bought anything: the across-seed
-    correlation and the ratio of the paired SD to the unpaired SD it replaces.
-    """
+    """Paired statistics of a minus b (equal-length per-seed vectors): mean, SD,
+    95% and 90% t intervals, the verdicts, and two pairing diagnostics (across-seed
+    correlation, paired SD / unpaired SD)."""
     n = len(a)
-    diffs = [x - y for x, y in zip(a, b)]
-    mean = sum(diffs) / n
-    sd = math.sqrt(sum((d - mean) ** 2 for d in diffs) / (n - 1))
-    se = sd / math.sqrt(n)
-    t95 = stats.t.ppf(0.5 + CI_LEVEL / 2, n - 1)
-    t90 = stats.t.ppf(0.5 + TOST_LEVEL / 2, n - 1)
+    mean, lo95, hi95, sd = paired_t_interval(a, b, CI_LEVEL)
+    _, lo90, hi90, _ = paired_t_interval(a, b, TOST_LEVEL)
 
-    # what the unpaired (independent-samples) SD of the difference would be
     sd_a = math.sqrt(sum((x - sum(a) / n) ** 2 for x in a) / (n - 1))
     sd_b = math.sqrt(sum((y - sum(b) / n) ** 2 for y in b) / (n - 1))
     unpaired_sd = math.sqrt(sd_a ** 2 + sd_b ** 2)
     corr = stats.pearsonr(a, b)[0] if sd_a > 0 and sd_b > 0 else float("nan")
 
-    lo95, hi95 = mean - t95 * se, mean + t95 * se
-    lo90, hi90 = mean - t90 * se, mean + t90 * se
     return {
         "n_seeds": n, "mean_diff": mean, "paired_sd": sd,
         "ci95_lo": lo95, "ci95_hi": hi95, "ci90_lo": lo90, "ci90_hi": hi90,
@@ -266,9 +218,9 @@ def paired(a, b):
 
 
 def verdict(r):
-    """One word for the pair of independent tests, for the console table."""
+    """One word for the two verdicts."""
     if r["nonzero_95"] and r["equivalent_tost"]:
-        return "real-but-small"          # detectable, yet inside the margin
+        return "real-but-small"          # non-zero but inside the margin
     if r["nonzero_95"]:
         return "DIFFERENT"
     if r["equivalent_tost"]:
@@ -277,13 +229,11 @@ def verdict(r):
 
 
 def main():
+    argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter).parse_args()
     rows = []
 
-    # --- control: every mapped run must reproduce its published table cell ---
-    # Two failure modes to tell apart. A wrong directory lands on a different
-    # model and misses by far more than the table's own resolution; a last-digit
-    # transcription slip misses by at most one unit of the third decimal. The
-    # first is fatal, the second is reported and carried forward.
+    # every mapped run must reproduce its published cell: a gap above 0.001 is
+    # a wrong directory (fatal), a last-digit rounding difference is only reported
     print("=== Table III mapping control ===")
     e2e_data, fatal, slips = {}, [], []
     for key, path in E2E.items():
@@ -308,7 +258,6 @@ def main():
             print("   " + s)
     print()
 
-    # --- end-to-end contrasts, both metrics ---
     print("=== End-to-end (Table III), paired over validation seeds ===")
     print(f"{'claim':<16} {'metric':<4} {'n':>2} {'diff':>8} {'95% CI':>19} {'verdict':<15}")
     for cid, dset, a_name, b_name, sentence in E2E_CONTRASTS:
@@ -323,7 +272,6 @@ def main():
             print(f"{cid:<16} {metric:<4} {r['n_seeds']:>2} {r['mean_diff']:>+8.4f} "
                   f"[{r['ci95_lo']:>+7.4f},{r['ci95_hi']:>+7.4f}] {verdict(r):<15}")
 
-    # --- capacity sweep contrasts ---
     print("\n=== Head-capacity sweep, paired over validation seeds (AUC) ===")
     cells = {dname: load_cells(sweep_dir) for dname, sweep_dir in DATASETS}
     print(f"{'claim':<20} {'head':<7} {'diff':>8} {'95% CI':>19} {'verdict':<15}")
@@ -338,7 +286,6 @@ def main():
         print(f"{cid:<20} {head:<7} {r['mean_diff']:>+8.4f} "
               f"[{r['ci95_lo']:>+7.4f},{r['ci95_hi']:>+7.4f}] {verdict(r):<15}")
 
-    # --- the validation-selected camp margins from Fig. 4, every head ---
     print("\n=== Validation-selected camp margins (Fig. 4), paired over seeds ===")
     print(f"{'dataset':<15} {'head':<10} {'Q source':<15} {'C source':<12} "
           f"{'diff':>8} {'95% CI':>19} {'verdict':<15}")
@@ -361,7 +308,6 @@ def main():
                   f"{r['mean_diff']:>+8.4f} [{r['ci95_lo']:>+7.4f},{r['ci95_hi']:>+7.4f}] "
                   f"{verdict(r):<15}")
 
-    # --- pairing diagnostic: did differencing within seed actually help? ---
     ratios = [r["pairing_sd_ratio"] for r in rows if not math.isnan(r["pairing_sd_ratio"])]
     corrs = [r["seed_corr"] for r in rows if not math.isnan(r["seed_corr"])]
     helped = sum(1 for x in ratios if x < 1.0)
@@ -384,14 +330,6 @@ def main():
         w.writeheader()
         w.writerows(rows)
     print(f"\nwrote {out_path}  ({len(rows)} contrasts, delta = {DELTA})")
-
-    # --- cost of the example-level interval R4 actually asked for ---
-    # Capacity sweep: 30 Optuna trials + 10 validation seeds per cell. Re-running
-    # only the validation seeds with predictions saved skips the search.
-    print("\nCost of upgrading to example-level (DeLong / bootstrap over test cases):")
-    print("  capacity sweep  10 of 40 trainings per cell = 25% of the original sweep")
-    print("  end-to-end      10 of 210 trainings per model = 4.8% of the original search")
-    print("  Only the seeds listed in the contrasts above actually need it.")
 
 
 if __name__ == "__main__":

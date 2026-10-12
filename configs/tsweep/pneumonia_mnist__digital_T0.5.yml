@@ -1,4 +1,4 @@
-# A9 evolution-time sweep: pneumonia_mnist, digital encoding, T = 0.5
+# Evolution-time sweep: pneumonia_mnist, digital encoding, T = 0.5
 # Three topologies only (val-selected best per encoding + kings reference).
 dataset:
   name: pneumonia_mnist

@@ -1,14 +1,36 @@
 cff-version: 1.2.0
 message: >-
-  If you use this software, please cite it using the metadata below.
-  A reference to the accompanying paper will be added upon publication.
+  If you use this software, please cite the accompanying paper
+  (preferred-citation below).
   This project extends the DAQCNN framework of Simen et al. (see references).
-title: "MoT-DAQCNN"
+title: "DAQCNN-Classical-Nonlinearity"
 authors:
   - family-names: "Batista"
     given-names: "Nuno"
-repository-code: "https://github.com/NunoMBatista/MoT-DAQCNN"
+repository-code: "https://github.com/NunoMBatista/DAQCNN-Classical-Nonlinearity"
 license: MIT
+preferred-citation:
+  type: conference-paper
+  title: "Reproducing the Apparent Quantum-Kernel Advantage of Rydberg-Atom DAQCNN Using Classical Nonlinearity"
+  authors:
+    - family-names: "Batista"
+      given-names: "Nuno"
+    - family-names: "Morgado"
+      given-names: "Ana"
+    - family-names: "Ferraz"
+      given-names: "Oscar"
+    - family-names: "Pratapsi"
+      given-names: "Sagar Silva"
+    - family-names: "Lobo"
+      given-names: "Jorge"
+    - family-names: "Falcão"
+      given-names: "Gabriel"
+  collection-title: "2026 IEEE 2nd International Conference on Quantum Artificial Intelligence (QAI)"
+  conference:
+    name: "2026 IEEE 2nd International Conference on Quantum Artificial Intelligence (QAI)"
+  publisher:
+    name: "IEEE"
+  year: 2026
 references:
   - type: article
     title: "Digital-Analog Quantum Convolutional Neural Networks for Image Classification"

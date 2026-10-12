@@ -1,5 +1,5 @@
 # BreastMNIST DAQCNN — Digital encoding, no ZZ (1-kernel)
-# Best config from HP search 1a (study: digital_z_single_kernel_fair)
+# Best config of the end-to-end HP search (study: digital_z_single_kernel_fair)
 # Test (10-seed): acc=0.848 ± 0.018, AUC=0.868 ± 0.007
 
 dataset:

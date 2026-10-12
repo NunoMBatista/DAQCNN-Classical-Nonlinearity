@@ -12,5 +12,5 @@
 # macro-OVR AUC). Needs the analog-ZZ cache (merged) and analog-Z cache (derived).
 cd $HOME/MoT-DAQCNN
 export OMP_NUM_THREADS=16
-.venv/bin/python experiments/probe_tissue_analog_topology.py
+.venv/bin/python experiments/probe_tissue.py analog-topology
 echo "TA_TOPOPROBE_EXIT $?"

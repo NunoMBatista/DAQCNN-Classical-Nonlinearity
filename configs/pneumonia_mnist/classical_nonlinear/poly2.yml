@@ -1,8 +1,6 @@
-# BreastMNIST end-to-end on poly-2 features, via the classical-feature cache.
-# architecture "original" + the poly2 cache => find_cached matches, bypass_quantum
-# is set, and the CNN head trains on the cached 45-dim poly-2 features through the
-# identical path as the quantum table rows. Topology name "poly2" is synthetic and
-# only exists to match the cache; include_correlators=false matches the cache meta.
+# PneumoniaMNIST end-to-end on poly-2 features from the classical cache
+# (experiments/create_classical_cache.py). DAQCNN finds the cache and skips the
+# quantum layer; the topology name "poly2" only identifies the cache.
 dataset:
   name: pneumonia_mnist
   data_root: ./data

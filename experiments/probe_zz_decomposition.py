@@ -1,36 +1,20 @@
-"""Decompose the ZZ-correlator gain into a classical part and an entangled part.
+"""Split the ZZ-correlator gain into the product of marginals and the connected part.
 
-Reviewers 4 (#2) and 6 object that the paper's ZZ ablation is not
-dimension-matched (9 features against 45) and that raw <Z_iZ_j> certifies
-neither entanglement nor even correlation. Both objections are answered by one
-exact identity:
+    <Z_i Z_j> = <Z_i><Z_j> + C_ij
 
-    <Z_i Z_j>  =  <Z_i><Z_j>  +  C_ij ,       C_ij = <Z_i Z_j> - <Z_i><Z_j>
+The product term is a function of the nine Z-only features; C_ij is the
+connected correlator. Four arms per topology, all from one ZZ cache:
 
-The first term is a deterministic function of the nine single-qubit marginals,
-so it requires no correlation at all: a classical practitioner holding only the
-Z-only cache could compute it for free. The second is the connected correlator,
-the genuinely correlated part. Because the simulated states are pure (unitary
-evolution from a product state, analytic expectations, no shots and no
-decoherence), C_ij != 0 implies the state is not a product across the
-{i} | rest bipartition, i.e. it is entangled.
+    z     9 <Z_i>                         (9 channels)
+    zz    9 <Z_i> + 36 <Z_i Z_j>          (45)
+    prod  9 <Z_i> + 36 <Z_i><Z_j>         (45)
+    conn  9 <Z_i> + 36 C_ij               (45)
 
-This script builds four dimension-controlled feature sets per topology:
+Each arm is probed with C tuned on validation and scored on test.
 
-    z     nine <Z_i>                                       (  9 channels)
-    zz    nine <Z_i> + 36 raw <Z_iZ_j>                      ( 45 channels)
-    prod  nine <Z_i> + 36 products <Z_i><Z_j>               ( 45 channels)
-    conn  nine <Z_i> + 36 connected C_ij                    ( 45 channels)
-
-zz = prod + conn channel-wise, so the three 45-channel arms are mutually
-dimension-matched and the comparison isolates what the correlations add over
-their classically free shadow.
-
-All four are derived from an existing ZZ cache with no quantum recomputation.
-
-Run from the repo root:
-    python experiments/probe_zz_decomposition.py --dataset breast_mnist
-Writes outputs/camera_ready/zz_decomposition_<dataset>.csv (gitignored).
+    python experiments/probe_zz_decomposition.py --cache data/quantum_datasets/<cache>_zz.npz
+    (TissueMNIST: add --estimator logreg --max-rows TRAIN VAL TEST)
+Writes outputs/camera_ready/zz_decomposition_<tag>.csv.
 """
 import argparse
 import csv
@@ -46,10 +30,7 @@ from sklearn.svm import LinearSVC
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
-# Same protocol as linear_probing_topology_sweep.py, except that C is tuned on
-# validation rather than fixed at 1.0 (the project's fairness rule: an untuned
-# C under-regularises high-dimensional maps and would penalise the 45-channel
-# arms relative to the 9-channel one).
+# C is tuned on validation: a fixed C=1 under-regularises the 45-channel arms
 C_GRID = [0.001, 0.01, 0.1, 1.0, 10.0]
 
 
@@ -63,8 +44,7 @@ def topology_channels(meta, topology):
             z_channels.append((entry["qubit"], entry["channel"]))
         else:
             zz_triples.append((entry["channel"], *entry["qubit_pair"]))
-    # order by qubit index so position k in the stack is qubit k
-    z_channels.sort()
+    z_channels.sort()  # position k = qubit k
     return [ch for _, ch in z_channels], zz_triples
 
 
@@ -72,7 +52,6 @@ def build_arms(features, z_channels, zz_triples):
     """Four (N, channels, H, W) feature stacks from one topology's channels."""
     z = features[:, z_channels, :, :]
     zz_raw = features[:, [ch for ch, _, _ in zz_triples], :, :]
-    # product of marginals, pair by pair, in the cache's own pair order
     prod = np.stack([z[:, i] * z[:, j] for _, i, j in zz_triples], axis=1)
     conn = zz_raw - prod
     return {
@@ -84,12 +63,11 @@ def build_arms(features, z_channels, zz_triples):
 
 
 def stream_subsample(zf, member, keep, rows_per_block=256):
-    """Read rows `keep` (sorted indices) out of a compressed .npy zip member.
+    """Rows `keep` (sorted indices) of a compressed .npy member of an .npz.
 
-    The Tissue caches are deflate-compressed, so there is no random access: the
-    member has to be decompressed from the start. We walk it in blocks and copy
-    out only the wanted rows, which keeps peak memory at the size of the
-    subsample rather than the 38.6 GB full array.
+    The caches are deflate-compressed (no random access, and np.load's mmap is
+    ignored), so the member is decompressed block by block and only the wanted
+    rows are kept: peak memory is the size of the subsample.
     """
     with zf.open(member) as fh:
         version = np.lib.format.read_magic(fh)
@@ -99,8 +77,8 @@ def stream_subsample(zf, member, keep, rows_per_block=256):
         row_bytes = row_items * dtype.itemsize
 
         out = np.empty((len(keep), row_items), dtype=np.float32)
-        ki = 0          # next position in `keep` still to be filled
-        row = 0         # index of the first row in the current block
+        ki = 0          # next position in `keep` to fill
+        row = 0         # first row of the current block
         while row < shape[0] and ki < len(keep):
             n = min(rows_per_block, shape[0] - row)
             buf = read_exact(fh, row_bytes * n)
@@ -114,7 +92,7 @@ def stream_subsample(zf, member, keep, rows_per_block=256):
 
 
 def read_exact(fh, nbytes):
-    """zipfile streams may return short reads; loop until we have the block."""
+    """zipfile streams can return short reads."""
     chunks, got = [], 0
     while got < nbytes:
         chunk = fh.read(nbytes - got)
@@ -126,11 +104,8 @@ def read_exact(fh, nbytes):
 
 
 def load_splits(cache_path, max_rows, seed=0):
-    """Load train/val/test, subsampling rows when max_rows is given.
-
-    max_rows is (n_train, n_val, n_test); None means take the whole split.
-    Subsampling is a fixed-seed random draw over the whole split, not a prefix,
-    so it cannot be biased by any class ordering in the cache.
+    """Train/val/test via stream_subsample; max_rows = (n_train, n_val, n_test),
+    None = the whole split. The subsample is a seeded random draw, not a prefix.
     """
     zf = zipfile.ZipFile(cache_path)
     meta = json.loads(str(np.load(zf.open("metadata.npy"), allow_pickle=True)))
@@ -153,14 +128,8 @@ def flat(x):
 
 
 def make_clf(C, estimator):
-    """The two linear probes, sharing one C grid.
-
-    LinearSVC is liblinear, which is single-threaded and fits one binary
-    problem per class. On the 25k-row 8-class TissueMNIST blocks a single arm
-    took over two hours, so multiclass runs use LogisticRegression instead:
-    lbfgs solves all eight classes in one multinomial fit. The same choice is
-    already made, for the same reason, in probe_tissue_topologies.py.
-    """
+    """LinearSVC, or logistic regression for multi-class data (one multinomial
+    fit instead of eight single-threaded liblinear fits)."""
     if estimator == "logreg":
         return LogisticRegression(C=C, max_iter=2000)
     return LinearSVC(C=C, max_iter=50_000, dual="auto")
@@ -177,10 +146,8 @@ def probe(X_tr, y_tr, X_va, y_va, X_te, y_te, estimator="svc"):
         if scores.ndim == 1:
             auc = roc_auc_score(y, scores)
         else:
-            # Macro one-vs-rest AUC straight from the OVR decision function.
-            # sklearn's multi_class="ovr" path insists on normalised
-            # probabilities, which a margin classifier does not produce, so we
-            # binarise the labels and average the per-class AUCs ourselves.
+            # macro one-vs-rest AUC from decision scores (sklearn's "ovr"
+            # option requires probabilities)
             y_bin = label_binarize(y, classes=svm.classes_)
             auc = roc_auc_score(y_bin, scores, average="macro")
         return svm, accuracy_score(y, svm.predict(X)), auc
@@ -234,8 +201,7 @@ def main():
             f"{topology}: got {len(z_channels)} Z and {len(zz_triples)} ZZ channels"
         arms = {s: build_arms(f, z_channels, zz_triples) for s, (f, _) in splits.items()}
 
-        # How much of the raw ZZ signal is genuinely correlated? Ratio of the
-        # connected part's spread to the product part's, on the train split.
+        # spread of the connected part relative to the product part (train split)
         conn_only = arms["train"]["conn"][:, 9:]
         prod_only = arms["train"]["prod"][:, 9:]
         conn_share = float(conn_only.std() / (conn_only.std() + prod_only.std()))
@@ -256,8 +222,7 @@ def main():
             print(f"    {name:<5} {dim:>3} ch  C={C:<6g} val AUC {val_auc:.4f}  "
                   f"test AUC {test_auc:.4f}  acc {test_acc:.4f}", flush=True)
 
-        # rewrite after every topology: a multi-hour run must never be
-        # all-or-nothing if it is interrupted
+        # rewritten after every topology
         with open(out_path, "w", newline="") as fh:
             writer = csv.DictWriter(fh, fieldnames=list(rows[0].keys()))
             writer.writeheader()

@@ -1,5 +1,5 @@
 # TissueMNIST end-to-end DAQCNN, digital, Z-only (no ZZ correlators).
-# Topology fixed to star (capacity-sweep best for digital_z).
+# Topology fixed to star (as in the capacity sweep: test-scored probe winner).
 dataset:
   name: tissue_mnist
   data_root: ./data

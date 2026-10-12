@@ -1,4 +1,4 @@
-# A9 evolution-time sweep: breast_mnist, analog encoding, T = 0.2
+# Evolution-time sweep: breast_mnist, analog encoding, T = 0.2
 # Three topologies only (val-selected best per encoding + kings reference).
 dataset:
   name: breast_mnist

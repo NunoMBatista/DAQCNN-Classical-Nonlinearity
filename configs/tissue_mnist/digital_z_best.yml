@@ -1,4 +1,4 @@
-# tissue_mnist capacity-sweep best-config (topology = default, NOT probe-optimised)
+# tissue_mnist capacity-sweep config, digital-Z (topology = test-scored probe winner, probe_tissue.py topologies)
 dataset:
   name: tissue_mnist
   data_root: ./data

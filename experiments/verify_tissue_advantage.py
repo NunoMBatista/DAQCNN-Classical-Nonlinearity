@@ -1,21 +1,16 @@
-"""Fairness audit of the apparent low-capacity quantum advantage on TissueMNIST.
+"""TissueMNIST fairness check of the low-capacity quantum lead, at a logistic probe.
 
-The capacity sweep showed digital_zz beating classical nonlinear maps at the
-linear head. Two confounds could inflate that: the quantum topology was selected
-on TEST (probe_tissue_topologies.py uses no val split), and RFF used a fixed
-gamma=1/9 heuristic (never tuned). This script removes both:
+Quantum: every single topology and four-kernel set of the digital ZZ cache,
+selected on a validation subsample, scored on test. Classical: poly-2, and RFF
+with the bandwidth (gamma) tuned on validation, at matched dimension (45, 180).
+C is tuned on validation for every arm. SEED (default 0) redraws the subsamples
+and the RFF weights.
 
-  - quantum: probe EVERY 1k topology and 4k ensemble, select on a held-out VAL
-    subsample, report the val-selected pick's TEST AUC.
-  - classical: poly-2, and RFF at a SWEPT bandwidth (gamma), each C- and
-    gamma-tuned on VAL, reported on TEST. Matched dimension (45 and 180).
+Loads the TissueMNIST ZZ cache: run on a large-memory node, never locally.
 
-All at the linear-probe level (regularized multinomial LogReg, the fair matched
-estimator), multiclass macro-OVR AUC on a subsample with train/val/test split.
-If val-selected quantum still beats gamma-tuned RFF at matched dim, the edge is
-real; if a tuned RFF closes it, it was a fairness artifact.
+    python experiments/verify_tissue_advantage.py [SEED]
 """
-import os, sys, time
+import argparse, os, sys, time
 import numpy as np
 import torch
 from sklearn.preprocessing import StandardScaler, label_binarize
@@ -27,16 +22,12 @@ from src.utils.quantum_dataset_cache import load_cached_quantum_dataset
 from src.utils.data import get_dataloaders
 from src.utils.classical_nonlinear_features import poly2_features, rff_features
 
-# Subsample draw index (camera-ready, 2026-09-26): `python ... [SEED]`.
-# SEED=0 (the default) reproduces the original 2026-06-03 run exactly
-# (MCC job 145541); SEED>0 redraws the quantum subsample, the classical
-# subsample (both follow the global torch generator seeded here) and the RFF
-# weights, to check how stable the val-selected pick is.
-SEED = int(sys.argv[1]) if len(sys.argv) > 1 else 0
-CLASSICAL_SEED = 42 + SEED   # RFF weight seed; 42 is rff_features' default
-torch.manual_seed(SEED)   # reproducible loader shuffles / subsample draws
+ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+ap.add_argument("seed", nargs="?", type=int, default=0, help="subsample / RFF draw (0 = the published run)")
+SEED = ap.parse_args().seed
+CLASSICAL_SEED = 42 + SEED   # RFF weight seed
+torch.manual_seed(SEED)      # the loader shuffles, i.e. the subsamples, follow this
 
-# every scored row also goes to a CSV (the original run printed to stdout only)
 OUT_CSV = f"outputs/camera_ready/tissue_fairness/verify_seed{SEED}.csv"
 ROWS = []   # (arm, name, gamma_rel, val_auc, test_auc, C)
 
@@ -46,7 +37,7 @@ ENSEMBLES = [["grid", "chain", "horizontal", t] for t in
              ["kings", "vertical", "cross", "ring", "star"]]
 N_TR, N_VAL, N_TE = 20000, 8000, 15000
 CS = [1e-2, 1e-1, 1.0]
-GAMMAS_REL = [0.25, 0.5, 1.0, 2.0, 4.0]   # multiples of the 1/9 heuristic
+GAMMAS_REL = [0.25, 0.5, 1.0, 2.0, 4.0]   # multiples of gamma = 1/9
 NCLS = 8
 
 
@@ -90,8 +81,10 @@ Xq_all, yq_all = stack(tr_loader, N_TR + N_VAL)
 Xq_te, yq_te = stack(te_loader, N_TE)
 Xq_tr, ytr = Xq_all[:N_TR], yq_all[:N_TR]
 Xq_v, yv = Xq_all[N_TR:N_TR + N_VAL], yq_all[N_TR:N_TR + N_VAL]
-# channel block for topology k is [k*45:(k+1)*45]
+
+
 def topo_block(X, names):
+    """Channels of the named topologies (topology k = channels k*45 .. k*45+44)."""
     idx = []
     for nm in names:
         k = TOPOS.index(nm); idx += list(range(k * 45, (k + 1) * 45))
@@ -115,38 +108,29 @@ for ens in ENSEMBLES:
     ROWS.append(("quantum_4k", q4k[-1][0], "", v, te, C))
 b4 = max(q4k, key=lambda r: r[1])
 
-# free quantum mem
 del Xq_all, Xq_tr, Xq_v, Xq_te
 
 print("\nloading tissue patches for classical maps...", flush=True)
 cfg = {"dataset": {"name": "tissue_mnist", "data_root": "./data", "batch_size": 2000,
                    "num_workers": 0, "download": False, "color_space": "GRAYSCALE"}}
 ctr, _, cte, _ = get_dataloaders(cfg)
-# Use the classical loader's OWN labels. get_dataloaders and the quantum cache
-# loader both shuffle the train split independently (data.py:144,
-# quantum_dataset_cache.py:268), so the classical features must be paired with
-# the labels from the same loader -- pairing them with the quantum ytr/yv yields
-# a sub-chance AUC. The classical subsample is therefore a different random draw
-# from the same official splits than the quantum one; this is a fair comparison
-# (same distribution, same train/val/test splits, identical estimator).
-Pall, yc_all = stack(ctr, N_TR + N_VAL)   # raw images [N,1,28,28] + their labels
+# The two train loaders shuffle independently, so the classical features must
+# use their own loader's labels (a different subsample of the same splits).
+Pall, yc_all = stack(ctr, N_TR + N_VAL)
 Pte, yc_te = stack(cte, N_TE)
 Ptr, Pv = Pall[:N_TR], Pall[N_TR:N_TR + N_VAL]
 yc_tr, yc_v = yc_all[:N_TR], yc_all[N_TR:N_TR + N_VAL]
 g0 = 1.0 / 9
 
 print("\n=== CLASSICAL (matched estimator, val-tuned) ===", flush=True)
-# poly-2 (45)
 v, te, C = fit_eval(flat(poly2_features(Ptr)), yc_tr, flat(poly2_features(Pv)), yc_v,
                     flat(poly2_features(Pte)), yc_te)
 print(f"  poly2_45            test={te:.4f}", flush=True)
 ROWS.append(("classical", "poly2_45", "", v, te, C))
-# RFF at swept gamma, both dims
 for D in (45, 180):
     rows = []
     for gr in GAMMAS_REL:
         g = g0 * gr
-        # one RFF draw (seed) shared by the train, val and test features
         v, te, C = fit_eval(flat(rff_features(Ptr, D, gamma=g, seed=CLASSICAL_SEED)), yc_tr,
                             flat(rff_features(Pv, D, gamma=g, seed=CLASSICAL_SEED)), yc_v,
                             flat(rff_features(Pte, D, gamma=g, seed=CLASSICAL_SEED)), yc_te)
@@ -159,7 +143,6 @@ print("\n=== VERDICT (linear-probe, fair) ===", flush=True)
 print(f"  quantum digital_zz 1k val-selected: {b1[0]} -> test {b1[2]:.4f}", flush=True)
 print(f"  quantum digital_zz 4k val-selected: {b4[0]} -> test {b4[2]:.4f}", flush=True)
 
-# archive every scored row (seed, arm, name, gamma multiple, val AUC, test AUC, C)
 os.makedirs(os.path.dirname(OUT_CSV), exist_ok=True)
 with open(OUT_CSV, "w") as f:
     f.write("seed,arm,name,gamma_rel,val_auc,test_auc,C\n")

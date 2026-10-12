@@ -1,17 +1,10 @@
-"""Generate a poly-2 / RFF feature cache in the SAME .npz+.json format as the
-quantum cache, so the existing `find_cached_quantum_dataset` + `bypass_quantum`
-path in hyperparameter_search.py consumes it exactly like a quantum source.
-This lets poly-2/RFF rows go through the identical cache -> bypass -> CNN-head
-pipeline as the quantum table rows (maximal comparability), with no new plumbing
-in the HP-search script.
+"""Write a poly-2 or RFF feature cache in the quantum-cache format.
 
-Each cache is given a synthetic single-"topology" identity ("poly2"/"rff45"/
-"rff180") so the matcher accepts a config whose kernel_topology_names mirror it.
-Features come from the identical dataloader + feature map the capacity sweep uses.
+The cache gets a synthetic topology name ("poly2", "rff45", "rff180"), so the
+end-to-end HP search finds and consumes it exactly like a quantum cache.
+Features come from the same dataloader and feature maps as the capacity sweep.
 
-Usage:
-  python experiments/create_classical_cache.py --dataset breast_mnist \
-      --source poly2_45 --out-dir data/quantum_datasets
+    python experiments/create_classical_cache.py --dataset breast_mnist --source poly2_45
 """
 import os, sys, json, argparse
 from datetime import datetime
@@ -21,9 +14,9 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")
 from src.utils.data import get_dataloaders
 from src.utils.classical_nonlinear_features import poly2_features, rff_features
 
-RFF_SEED = 42  # match RANDOM_FILTER_SEED in head_capacity_sweep.py (the published caches)
+RFF_SEED = 42  # the draw of the published caches (= RANDOM_FILTER_SEED in head_capacity_sweep.py)
 
-# source -> (synthetic topology name, feature-map fn of (images, rff_seed))
+# source -> (synthetic topology name, feature map of (images, rff_seed))
 SOURCES = {
     "poly2_45": ("poly2",  lambda x, seed: poly2_features(x)),
     "rff_45":   ("rff45",  lambda x, seed: rff_features(x, 45,  seed=seed)),
@@ -44,9 +37,8 @@ def main():
     ap.add_argument("--dataset", required=True)
     ap.add_argument("--source", required=True, choices=list(SOURCES))
     ap.add_argument("--out-dir", default="data/quantum_datasets")
-    # RFF projection draw. The default is the draw every published RFF cache
-    # uses; any other value should go to its own --out-dir, because the cache
-    # identity (and filename) does not include the draw.
+    # the draw is not part of the cache identity or file name: write other draws
+    # to their own --out-dir
     ap.add_argument("--rff-seed", type=int, default=RFF_SEED)
     args = ap.parse_args()
 
@@ -61,8 +53,6 @@ def main():
         print(f"  {split}: {feats[split].shape}")
 
     F = feats["train"].shape[1]
-    # generic channel map (only used by the loader for subset slicing, which we
-    # never trigger since the config requests the exact cached topology)
     ckm = [{"channel": i, "kernel": topo} for i in range(F)]
     meta = {
         "dataset_name": args.dataset, "image_size": 28, "in_channels": 1,
@@ -77,8 +67,8 @@ def main():
         "created_at": datetime.now().isoformat(),
         "train_samples": len(labs["train"]), "val_samples": len(labs["val"]),
         "test_samples": len(labs["test"]),
-        "feature_source": args.source,  # provenance note (ignored by matcher)
-        "rff_seed": args.rff_seed,      # provenance note (ignored by matcher; unused by poly2)
+        "feature_source": args.source,
+        "rff_seed": args.rff_seed,
     }
 
     os.makedirs(args.out_dir, exist_ok=True)

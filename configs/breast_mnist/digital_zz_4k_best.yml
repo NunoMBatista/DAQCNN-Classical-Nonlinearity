@@ -1,5 +1,5 @@
 # BreastMNIST DAQCNN — Digital encoding + ZZ correlators (4-kernel)
-# Best config from HP search 1h (study: digital_zz_fair_comparison)
+# Best config of the end-to-end HP search (study: digital_zz_fair_comparison)
 # Test (10-seed): acc=0.852 ± 0.016, AUC=0.901 ± 0.005
 
 dataset:

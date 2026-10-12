@@ -1,21 +1,15 @@
-"""A9: is the digital-analog null specific to the tested operating point?
+"""Evolution-time sweep at the probe: the linear probe of
+linear_probing_topology_sweep.py on single-kernel features at
+T in {0.2, 0.5, 1.0, 2.5, 4.0}, both encodings, Z and Z+ZZ, three topologies per
+dataset, then the digital-minus-analog AUC per T. Both arms of every contrast
+have the same dimension, so the untuned probe C affects them equally.
 
-R4 #6 and R6 ask whether the encoding null (digital and analog perform
-comparably) holds only at T = 2.5, and R6 separately asks about the original
-tau = 0.2 operating point of Simen et al. This probes the frozen features at
-five evolution times under both encodings, at matched topology and matched
-dimensionality, so the only thing varying is T.
+T = 2.5 comes from the eight-topology caches; the other T from the caches built
+with configs/tsweep/ (create_quantum_dataset.py chunk mode + tsweep_merge.py).
 
-The probe is a standardized LinearSVC. Its penalty is untuned, which would be a
-problem for a quantum-versus-classical claim but is not one here: both arms of
-every contrast are quantum features of identical dimension, so the probe is
-affected equally. This is a representational measure, not an operating point.
-
-T = 2.5 is read from the existing eight-topology caches by channel slicing; the
-other four evolution times come from the caches generated for this sweep.
+    python experiments/tsweep_probe.py --datasets breast_mnist pneumonia_mnist
 """
 import argparse, csv, os, sys
-from collections import defaultdict
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from experiments.linear_probing_topology_sweep import (
@@ -76,7 +70,6 @@ def main():
         w.writerows(rows)
     print(f"\nwrote {args.out}  ({len(rows)} probes)")
 
-    # The A9 readout: the digital-minus-analog gap as a function of T.
     print("\nDigital minus analog AUC, at matched topology and dimension:")
     idx = {(r["dataset"], r["topology"], r["correlators"], r["encoding"], r["T"]): r["auc"]
            for r in rows}

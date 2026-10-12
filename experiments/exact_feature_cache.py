@@ -1,28 +1,20 @@
-"""R6 (camera-ready): exact-evolution feature caches, so the linear probe can be
-re-run on features that carry no Trotter error.
+"""Feature caches from exact (ODE) evolution instead of the dt = 0.05 Trotter steps,
+for the Trotter-error check of the probe (exact_probe.py).
 
-Same image pipeline as production (load_medmnist_dataset -> QuantumConv2d's
-_normalize_inputs and unfold, unshuffled), same channel layout as a production
-cache (topology-major, 9 Z channels then the 36 ZZ pairs in combinations order),
-same npz/json format, written to outputs/camera_ready/exact_caches/ with an
-"__exact" suffix so the production cache matcher never picks them up.
+Same images, normalisation, patches and channel layout as the production
+caches. Written to outputs/camera_ready/exact_caches/ with an "__exact" suffix,
+so the cache lookup never picks them up.
 
-Digital: the evolution operator does not depend on the data, so U(T) is
-integrated ONCE per topology (PennyLane qml.evolve, jax odeint, tol 1e-11) and
-applied to every patch's product initial state; ~20 s per (topology, T).
-Analog: the data enter the Hamiltonian, so every patch is one ODE solve
-(scipy DOP853, rtol 1e-9, ~0.04 s), spread over a process pool.
+Digital: U(T) does not depend on the data, so it is integrated once per
+topology (qml.evolve, tol 1e-11) and applied to every patch's product state.
+Analog: one scipy DOP853 solve per patch (rtol 1e-9), over a process pool.
 
-Controls, all with known answers, run before anything is written:
-  1. labels of every split equal the production cache's labels (ordering);
-  2. production Trotter features recomputed here for two test images equal the
-     production cache's stored features (image pipeline);
-  3. exact features for BreastMNIST test image 0 equal the per-patch reference
-     from trotter_convergence_check.py when that file exists (solver).
+Checks before writing: labels equal the production cache's; production
+features recomputed here for two test images equal the stored ones; and, if the
+reference file of trotter_convergence_check.py exists, the exact features of
+BreastMNIST test image 0 match it.
 
-Usage:
-  python experiments/exact_feature_cache.py --dataset breast_mnist --enc digital --T 0.2 0.5 1.0 2.5 4.0
-  python experiments/exact_feature_cache.py --dataset breast_mnist --enc analog --T 2.5 --workers 12
+    python experiments/exact_feature_cache.py --dataset breast_mnist --enc digital --T 0.2 0.5 1.0 2.5 4.0
 """
 import argparse, json, os, sys, time
 from datetime import datetime
@@ -49,13 +41,12 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 OUT_DIR = os.path.join(ROOT, "outputs", "camera_ready", "exact_caches")
 CHECK_DIR = os.path.join(ROOT, "outputs", "camera_ready", "trotter_convergence")
 
-TOPOLOGIES = {                       # the A9 sweep topologies, per dataset
+TOPOLOGIES = {                       # the evolution-time sweep topologies
     "breast_mnist":    ["kings", "cross", "star"],
     "pneumonia_mnist": ["kings", "horizontal", "star"],
 }
 
 
-# ----------------------------------------------------------------------------- images -> patches
 def split_patches(conv, dataset, split):
     """All patches of one split, (N, 81, 9), plus labels (N,), in dataset order."""
     ds = load_medmnist_dataset(dataset, split, os.path.join(ROOT, "data"))
@@ -69,7 +60,6 @@ def split_patches(conv, dataset, split):
     return np.concatenate(patches), np.concatenate(labels)
 
 
-# ----------------------------------------------------------------------------- exact features
 def z_matrix(pieces):
     """(512, 45) matrix whose columns are the diagonals of Z_i and Z_i Z_j."""
     _, _, _, _, z_i = pieces
@@ -88,8 +78,7 @@ def digital_unitary(coords, T):
 
 
 def digital_exact_features(U, zmat, patches, chunk=8192):
-    """Vectorized: product initial states H RY(x_i)|0> for every patch, then U.
-    Processed in chunks so the (n, 512) complex state array stays small."""
+    """(n, 45) features: product states H RY(x_i)|0> of every patch, evolved by U (in chunks)."""
     p_all = np.asarray(patches, dtype=float).reshape(-1, N_QUBITS)
     out = []
     for start in range(0, len(p_all), chunk):
@@ -105,7 +94,7 @@ def digital_exact_features(U, zmat, patches, chunk=8192):
     return np.concatenate(out)
 
 
-_WORKER = {}                                                   # pieces and T, set once per worker
+_WORKER = {}                                                   # set once per pool worker
 
 
 def _init_worker(pieces, T):
@@ -130,7 +119,6 @@ def analog_exact_features(pieces, T, patches, workers):
     return np.concatenate(out)
 
 
-# ----------------------------------------------------------------------------- controls
 def production_reference(dataset, topos, enc, T):
     """Path of the production Trotter cache holding these topologies at this T."""
     cfg = make_cfg(topos, enc, True, dataset_name=dataset)
@@ -142,19 +130,18 @@ def production_reference(dataset, topos, enc, T):
 
 
 def check_labels_and_pipeline(dataset, topos, enc, T, labels, conv):
-    """Controls 1 and 2 against the production cache (Breast/Pneumonia only)."""
+    """Labels and two images' features against the production cache (Breast/Pneumonia only)."""
     path = production_reference(dataset, topos, enc, T)
-    ref = np.load(path, allow_pickle=True)                     # < 0.5 GB for these two datasets
+    ref = np.load(path, allow_pickle=True)                     # small for these two datasets
     for split in ("train", "val", "test"):
         assert np.array_equal(ref[f"{split}_labels"].reshape(-1), labels[split]), f"label mismatch {split}"
-    # production Trotter features for two test images, recomputed through THIS pipeline
     tr, _, te, _, meta = load_cached_quantum_dataset(path, batch_size=2, num_workers=0, requested_kernels=topos)
     cached, _ = next(iter(te))                                 # (2, 45*k, 9, 9) float32
     ds = load_medmnist_dataset(dataset, "test", os.path.join(ROOT, "data"))
     imgs = torch.stack([ds[0][0], ds[1][0]]).double()
     with torch.no_grad():
         mine = conv(imgs).numpy()                              # production layer, default.qubit
-    # the loader orders requested kernels by their cache channel position; match that
+    # the loader returns the requested kernels in cache channel order
     order = meta["kernel_topology_names"]
     if order != topos:
         idx = [topos.index(t) for t in order]
@@ -166,14 +153,13 @@ def check_labels_and_pipeline(dataset, topos, enc, T, labels, conv):
 
 
 def check_solver(enc, T, topo, exact_test_feats_topo):
-    """Control 3: BreastMNIST test image 0 against the per-patch reference of the check script."""
+    """BreastMNIST test image 0 against the reference file of trotter_convergence_check.py."""
     f = os.path.join(CHECK_DIR, f"{enc}__breast_test0__{topo}__T{T}.npz")
     if not os.path.exists(f):
         print(f"  control 3 skipped (no {os.path.basename(f)})")
         return
     ref = np.load(f)
-    # reference arrays are (n, 45) per-patch (n = 81, or fewer for a smoke-test file);
-    # ours is (N, 45, 9, 9) -> image 0 -> (81, 45)
+    # reference: (n, 45) per patch; ours: (N, 45, 9, 9) -> image 0 -> (81, 45)
     n = ref["exact"].shape[0]
     mine = exact_test_feats_topo[0].reshape(45, 81).T[:n]
     err_ex = float(np.max(np.abs(mine - ref["exact"])))
@@ -182,7 +168,6 @@ def check_solver(enc, T, topo, exact_test_feats_topo):
     assert err_sp < 1e-6, err_sp
 
 
-# ----------------------------------------------------------------------------- main
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--dataset", required=True, choices=list(TOPOLOGIES))
@@ -206,8 +191,8 @@ def main():
             print(f"  {split}: {patches[split].shape[0]} images", flush=True)
         order = check_labels_and_pipeline(args.dataset, topos, args.enc, T, labels, conv)
 
-        feats = {s: [] for s in patches}                       # per split: list of (N*81, 45) per topology
-        for topo in order:                                     # cache channel order
+        feats = {s: [] for s in patches}
+        for topo in order:
             coords = topologies.build_kernel_coordinate_sets(3, [topo])[0]
             pieces = build_static_pieces(coords)
             if args.enc == "digital":
@@ -222,14 +207,13 @@ def main():
                 feats[split].append(f.reshape(p.shape[0], 81, n_per_topo))
             print(f"  {topo} done ({time.time()-t_start:.0f}s)", flush=True)
 
-        # assemble (N, 45*k, 9, 9) exactly like the production forward: concat features
-        # per topology, then (N, 81, C) -> (N, C, 81) -> (N, C, 9, 9)
+        # same layout as the production forward: (N, 81, C) -> (N, C, 9, 9)
         out = {}
         for split in ("train", "val", "test"):
             arr = np.concatenate(feats[split], axis=2)         # (N, 81, 45*k)
             out[f"{split}_features"] = np.ascontiguousarray(arr.transpose(0, 2, 1).reshape(arr.shape[0], -1, 9, 9))
             out[f"{split}_labels"] = labels[split]
-        if args.dataset == "breast_mnist":                     # control 3, per topology that has a reference file
+        if args.dataset == "breast_mnist":
             for i, topo in enumerate(order):
                 check_solver(args.enc, T, topo, out["test_features"][:1, 45 * i:45 * (i + 1)])
 

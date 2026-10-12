@@ -1,4 +1,4 @@
-# BreastMNIST DAQCNN (Single Kernel Baseline)
+# BreastMNIST DAQCNN (single kernel)
 # Features: Digital Encoding + ZZ Correlators
 
 dataset:
@@ -14,7 +14,7 @@ model:
   num_classes: 2
   kernel_size: 3
   stride: 3
-  # Default to kings, but search config will tune this
+  # the search config tunes the topology
   kernel_topology_names: ["kings"]
   scaling_factor: 1.0
   evolution_time: 2.5

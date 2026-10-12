@@ -1,12 +1,10 @@
 """Rebuild a capacity-sweep summary.csv from the per-cell summary.json files.
 
-Parallel workers each overwrite summary.csv with only their own sources, so the
-combined file must be reassembled from cells/*/summary.json after a fan-out run.
-The cell JSONs do NOT store param_count (identical across MedMNIST datasets since
-all images are 28x28), so we borrow the (head, source) -> param_count map from any
-existing summary.csv (this dataset's stale partial, or another dataset's).
+Needed after parallel workers, which each overwrite summary.csv with their own
+cells. The cell files do not store param_count, which depends only on the head
+and the input channels, so it is borrowed from existing summary.csv files.
 
-Usage: python experiments/rebuild_capacity_summary.py --dir outputs/.../<dataset>
+    python experiments/rebuild_capacity_summary.py --dir outputs/paper_results/capacity_sweep_std/<dataset>
 """
 import os, json, csv, glob, argparse
 
@@ -17,9 +15,7 @@ COLUMNS = ["head", "source", "in_channels", "param_count", "n_trials",
 
 
 def borrow_param_counts(paths):
-    """Build (head, in_channels) -> param_count from existing summary.csv files.
-    param_count is fixed by the head architecture and input channel count, so
-    sources of equal dim (e.g. random_45, poly2_45, rff_45) share it."""
+    """(head, in_channels) -> param_count from existing summary.csv files."""
     pc = {}
     for p in paths:
         if not os.path.exists(p):

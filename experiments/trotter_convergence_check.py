@@ -1,31 +1,20 @@
-"""R6 (camera-ready): how far are the delta_t = 0.05 Trotterized features from the
-exact Hamiltonian evolution, and do they converge as delta_t shrinks?
+"""How far are the dt = 0.05 Trotter features from exact evolution?
 
-For a few real test images (patches normalized and unfolded exactly as the
-production layer does), kings topology, both encodings, Z and ZZ features:
+For three real test images (all 81 patches each, normalised and unfolded by the
+production layer), Z and ZZ features from:
+  prod      the production QuantumConv2d (dt = 0.05)
+  hand_dt   the same Trotter circuit with dt = 0.05, 0.025 (and 0.0125)
+  exact     qml.evolve (jax odeint)
+  scipy     an independent dense-matrix solver (DOP853, tol 1e-11)
 
-  prod      production QuantumConv2d(mode="trotter", dt=0.05, default.qubit)
-  hand_dt   the same evolve_analog_block Trotter path rebuilt here so dt can vary
-            (dt = 0.05, 0.025; also 0.0125 at T = 2.5)
-  exact     PennyLane's exact evolution, qml.evolve -> jax odeint (mode="exact")
-  scipy     an independent exact reference: dense H(t) built with numpy kron,
-            Schroedinger equation integrated with scipy DOP853 at 1e-11
+Checks with known answers: hand_0.05 == prod; scipy == exact; exact at default
+and tight tolerance agree; digital features -> sin x_i, sin x_i sin x_j as T -> 0;
+first-order convergence in dt.
 
-Planted controls (each has a known answer):
-  (a) hand_0.05 == prod            (instrument reproduces production, ~1e-12)
-  (b) scipy == exact                (two independent exact solvers, ~1e-7)
-  (c) exact at default tol == exact at tight tol (ODE converged, ~1e-8)
-  (d) T -> 0 digital features == sin x_i and sin x_i sin x_j (encoding sanity)
-  (e) err(dt) / err(dt/2) ~ 2      (first-order Trotter, expected order)
-
-Usage:
-  python experiments/trotter_convergence_check.py --enc digital [--topo kings --T 2.5]
-  python experiments/trotter_convergence_check.py --enc analog  [--topo kings --T 2.5]
-  python experiments/trotter_convergence_check.py --summary   # all per-arm CSVs -> table
-
-Writes outputs/camera_ready/trotter_convergence_<enc>_<topo>_T<T>.csv (long format) and
-outputs/camera_ready/trotter_convergence/<enc>__<image>__<topo>__T<T>.npz with
-every feature array, so nothing has to be recomputed to look at distributions.
+    python experiments/trotter_convergence_check.py --enc digital [--topo kings --T 2.5]
+    python experiments/trotter_convergence_check.py --summary
+Writes outputs/camera_ready/trotter_convergence_<enc>_<topo>_T<T>.csv and the
+feature arrays to outputs/camera_ready/trotter_convergence/.
 """
 import argparse, csv, os, sys, time
 from itertools import combinations
@@ -48,11 +37,10 @@ NPZ_DIR = os.path.join(OUT_DIR, "trotter_convergence")
 N_QUBITS = 9
 WIRES = list(range(N_QUBITS))
 ZZ_PAIRS = list(combinations(WIRES, 2))       # production order of the 36 ZZ features
-TS = [0.2, 0.5, 1.0, 2.5, 4.0]                # the A9 sweep grid; 2.5 is the paper's operating point
+TS = [0.2, 0.5, 1.0, 2.5, 4.0]                # 2.5 is the paper's operating point
 DT_PROD = 0.05
 
-# (label, npz file, split, index). Per-image min-max normalization means each image
-# spans [0, pi] on its own, so three images give 243 patches over the full range.
+# (label, MedMNIST file, split, index)
 IMAGES = [
     ("breast_test0", "breastmnist.npz", "test_images", 0),
     ("breast_test1", "breastmnist.npz", "test_images", 1),
@@ -60,10 +48,8 @@ IMAGES = [
 ]
 
 
-# ----------------------------------------------------------------------------- patches
 def load_patches(conv, npz_name, split, index):
-    """Return the (81, 9) normalized patches of one image, built by the production
-    layer's own _normalize_inputs and unfold (so ordering and scaling are identical)."""
+    """(81, 9) patches of one image, from the production layer's own normalisation and unfold."""
     img = np.load(os.path.join(ROOT, "data", npz_name))[split][index] / 255.0
     x = torch.tensor(img, dtype=torch.float64)[None, None]          # (1, 1, 28, 28)
     xn = conv._normalize_inputs(x)
@@ -71,7 +57,6 @@ def load_patches(conv, npz_name, split, index):
     return patches
 
 
-# ----------------------------------------------------------------------------- circuits
 def production_features(conv, patches):
     """Production Trotter features, (81, 45), through the DAQKLayer forward."""
     with torch.no_grad():
@@ -80,8 +65,7 @@ def production_features(conv, patches):
 
 
 def make_hand_qnode(coords, enc, T, mode, dt, device="default.qubit", **odeint_kwargs):
-    """A QNode that mirrors DAQKLayer.make_circuit but exposes dt and the ODE tolerances.
-    Called on ONE patch (a 1-D numpy array of 9 values in [0, pi])."""
+    """The DAQKLayer circuit with dt and the ODE tolerances exposed; takes one patch (9 values)."""
     H = phys.get_rydberg_hamiltonian(WIRES, coords, scaling_factor=1.0,
                                      use_local_detuning=(enc == "analog"))
     dev = qml.device(device, wires=N_QUBITS)
@@ -116,7 +100,6 @@ def hand_features(circuit, patches):
     return np.stack(rows)
 
 
-# ----------------------------------------------------------------------------- scipy reference
 def kron_all(single_site_mats):
     """Kronecker product over wires 0..8, wire 0 leftmost (PennyLane's convention)."""
     out = np.array([[1.0 + 0j]])
@@ -190,7 +173,6 @@ def scipy_features(pieces, enc, T, patches, rtol=1e-11, atol=1e-13):
     return np.stack(rows)
 
 
-# ----------------------------------------------------------------------------- bookkeeping
 def diff_stats(a, b):
     """Max-abs and RMS of a - b over the Z block, the ZZ block and all 45 features."""
     d = a - b
@@ -217,8 +199,7 @@ def main():
     rows = []
     t_start = time.time()
 
-    # kings at every T (the fully coupled 3x3, the paper's default and the hardest
-    # case for a product formula); cross and star at T = 2.5 only, as a spread check.
+    # kings (the most strongly coupled) at every T; cross and star at T = 2.5
     arms = [("kings", T) for T in TS] + [("cross", 2.5), ("star", 2.5)]
     if args.topo or args.T is not None:
         arms = [(t, T) for t, T in arms if (args.topo in (None, t)) and (args.T in (None, T))]
@@ -243,10 +224,9 @@ def main():
             for dt in dts:
                 feats[f"hand_{dt}"] = hand_features(hand[dt], patches)
             feats["exact"] = hand_features(exact, patches)
-            feats["exact_tight"] = hand_features(exact_tight, patches[:10])   # control (c), subset
+            feats["exact_tight"] = hand_features(exact_tight, patches[:10])
             feats["scipy"] = scipy_features(pieces, enc, T, patches)
 
-            # comparisons: (name, a, b)
             comps = [
                 ("ctrl_a_hand0.05_vs_prod", feats["hand_0.05"], feats["prod"]),
                 ("ctrl_b_scipy_vs_exact", feats["scipy"], feats["exact"]),
@@ -258,8 +238,7 @@ def main():
             if 0.0125 in dts:
                 comps.append(("trotter0.0125_vs_exact", feats["hand_0.0125"], feats["exact"]))
             if enc == "digital" and T == 0.2:
-                # control (d) uses the T -> 0 limit; report the T=0.2 deviation from
-                # sin x_i, sin x_i sin x_j here for the record (it is dynamics, not error).
+                # deviation from the T -> 0 limit at T = 0.2 (dynamics, not error)
                 sx = np.sin(np.asarray(patches, float))
                 sin_feats = np.concatenate([sx, np.stack([sx[:, i] * sx[:, j] for i, j in ZZ_PAIRS], 1)], 1)
                 comps.append(("trotter0.05_vs_sinx", feats["hand_0.05"], sin_feats))
@@ -282,8 +261,7 @@ def main():
             w.writerows(rows)
         print(f"wrote {csv_path} ({len(rows)} rows) at {time.time()-t_start:.0f}s", flush=True)
 
-    # control (d): T -> 0 digital limit equals sin x (0 Trotter steps at T=1e-6; the ODE
-    # window is negligible). Run on the first image's patches only.
+    # T -> 0 digital limit: features equal sin x_i, sin x_i sin x_j (first image)
     if enc == "digital" and ("kings", 0.2) in arms:
         coords = topologies.build_kernel_coordinate_sets(3, ["kings"])[0]
         conv0 = QuantumConv2d(kernel_size=3, stride=3, kernel_topology_names=["kings"],
@@ -298,7 +276,7 @@ def main():
 
 
 def print_summary():
-    """Pool the two CSVs: max over images of max_abs, per (enc, topology, T, comparison, block)."""
+    """Pool the per-arm CSVs: max over images of max_abs, per (enc, topology, T, comparison, block)."""
     import glob
     from collections import defaultdict
     pooled = defaultdict(lambda: [0.0, 0.0, 0])   # key -> [max_abs, sum of rms^2 * n, n]

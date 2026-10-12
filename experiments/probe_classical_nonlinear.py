@@ -1,16 +1,10 @@
-"""Seed-averaged linear-SVM probe of the classical baselines and nonlinear
-controls (random projection, poly-2, RFF), on the same patches and probe
-protocol as the quantum topology sweep.
+"""Linear-SVM probe of the classical maps (raw, poly-2, random projection, RFF)
+with the protocol of linear_probing_topology_sweep.py. Random projections and
+RFF are averaged over projection seeds (one draw can be far from typical);
+raw and poly-2 are deterministic. This gives the seed-averaged Random x45 probe
+baseline.
 
-Random and RFF feature maps are random by construction, so we report them as a
-mean over N projection seeds (the honest summary of "what a random map of this
-dimension achieves"). Poly-2 and raw are deterministic. Quantum is deterministic
-too and is not re-seeded; its values come from the topology sweep CSV.
-
-Cross-check: random_45 seed 42 reproduces the paper's hardcoded 0.766; the seed
-MEAN is higher (~0.78 on Breast), which is the value the paper should use.
-
-Usage: python experiments/probe_classical_nonlinear.py --dataset breast_mnist --seeds 10
+    python experiments/probe_classical_nonlinear.py --dataset breast_mnist --seeds 10
 """
 import argparse, os, sys, csv
 import numpy as np, torch
@@ -47,7 +41,7 @@ def probe(Xtr, ytr, Xte, yte, C=1.0):
 
 
 def seeded_mean(fn_tr, fn_te, ytr, yte, seeds):
-    """Probe AUC averaged over projection seeds for a random feature map."""
+    """(mean acc, mean AUC, AUC SD) of a random feature map over projection seeds."""
     accs, aucs = [], []
     for sd in seeds:
         a, u = probe(fn_tr(sd), ytr, fn_te(sd), yte)
@@ -74,11 +68,9 @@ def main():
         rows.append({"source": name, "dim": dim, "acc": round(acc, 4),
                      "auc": round(auc, 4), "auc_std": round(std, 4)})
 
-    # deterministic
     a, u = probe(Xtr, ytr, Xte, yte); add("raw", int(np.prod(Xtr.shape[1:])), a, u, 0.0)
     a, u = probe(poly2_features(Xtr), ytr, poly2_features(Xte), yte)
     add("poly2_45", poly2_features(Xtr[:1]).shape[1] * 81, a, u, 0.0)
-    # seeded
     add("random_45", 3645, *seeded_mean(lambda s: random_conv(Xtr, 45, s),
         lambda s: random_conv(Xte, 45, s), ytr, yte, s_lo))
     add("rff_45", 3645, *seeded_mean(lambda s: rff_features(Xtr, 45, seed=s),

@@ -1,7 +1,7 @@
 # =============================================================================
 # Fair Comparison HP Search — Digital + ZZ on BreastMNIST
 # =============================================================================
-# Matches the search space of the previous TS-MoE run exactly.
+# Tunes the fourth topology (grid + chain + horizontal + one) and the training HPs.
 
 settings:
   metric: val_acc
@@ -9,7 +9,7 @@ settings:
   study_name: "digital_zz_fair_comparison"
 
 search_space:
-  # === Kernel Selection (Matches previous search) ===
+  # === Kernel Selection ===
   model.kernel_topology_names:
     type: categorical
     choices:
@@ -19,7 +19,7 @@ search_space:
       - ["grid", "chain", "horizontal", "ring"]
       - ["grid", "chain", "horizontal", "star"]
 
-  # === Optimizer (Exact match to previous ranges) ===
+  # === Optimizer ===
   optim.lr:
     type: loguniform
     low:  1.0e-8

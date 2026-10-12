@@ -1,14 +1,14 @@
-"""Head-capacity sweep on frozen features.
+"""Head-capacity sweep on frozen features (Table I, Figs. 3-4).
 
-For each (head_type, feature_source) cell, run a small Optuna study over
-lr/weight_decay/dropout, then evaluate the best HPs over multiple seeds
-on the test set. Results: one CSV row per cell (mean ± std) and one row
-per (cell, seed).
+Five heads (linear, MLP-1, MLP-2, CNN-16, CNN-64) x 13 feature sources. For each
+cell a TPE study (seed 0) tunes lr, weight decay and dropout on validation
+accuracy, then the best setting is re-trained on --seeds and scored on test.
+Each cell writes cells/<head>__<source>/summary.json and is skipped if that file
+exists, so runs resume and parallel workers can share one --output-dir (rebuild
+the combined summary.csv with rebuild_capacity_summary.py afterwards).
 
-The sweep is designed to answer: how does the quantum-vs-classical AUC
-gap evolve as a function of downstream classifier capacity?
-
-See docs/plans/capacity_sweep.md for the full design.
+    python experiments/head_capacity_sweep.py --dataset breast_mnist \
+        --output-dir outputs/paper_results/capacity_sweep_std/breast_mnist
 """
 
 import argparse
@@ -45,9 +45,7 @@ from src.utils.training_utils import (
 from src.utils.classical_nonlinear_features import poly2_features, rff_features
 
 
-# ---------------------------------------------------------------------------
-# Defaults (kept module-level so they show up in --help-style introspection)
-# ---------------------------------------------------------------------------
+# module globals, read by train_head/load_features at call time (main() overrides them)
 DATASET = "breast_mnist"
 NUM_CLASSES = 2
 ACTIVATION = "gelu"
@@ -55,21 +53,13 @@ EPOCHS = 100
 PATIENCE = 30
 GRAD_CLIP = 1.0
 BATCH_SIZE = 32
-# Fixed across all heads and training seeds, so the published classical
-# projection curves rest on ONE draw. See tracker item A12 and
-# experiments/a12_projection_seeds.py, which re-runs these cells with the draw
-# regenerated per seed.
+# one random-filter / RFF draw for every head and training seed, as published;
+# projection_redraw.py re-runs those cells with the draw tied to the seed
 RANDOM_FILTER_SEED = 42
 
 
-# ---------------------------------------------------------------------------
-# Head ladder
-# Each entry: (builder_fn(num_classes, dropout, activation, in_channels) -> Module,
-#              use_scheduler: bool, label: str)
-# in_channels is needed by the CNN heads; MLP/Linear heads ignore it.
-# ---------------------------------------------------------------------------
-
 def _head_factory(name):
+    """(builder(num_classes, dropout, activation, in_channels), use_cosine_schedule) for a head."""
     if name == "linear":
         return (lambda nc, do, act, ic: build_linear_head(nc), False)
     if name == "mlp1":
@@ -86,22 +76,16 @@ def _head_factory(name):
 HEAD_NAMES = ["linear", "mlp1", "mlp2", "cnn_small", "cnn_large"]
 
 
-# ---------------------------------------------------------------------------
-# Feature sources
-# ---------------------------------------------------------------------------
-
-# All possible source names (static, for argparse choices). The actual specs
-# (quantum config paths) are built per-dataset by build_feature_sources().
 SOURCE_NAMES = [
     "raw", "random_9", "random_45", "random_180",
     "digital_z_1k", "digital_zz_1k", "analog_z_1k", "analog_zz_1k",
     "digital_zz_4k", "analog_zz_4k",
-    "poly2_45", "rff_45", "rff_180",          # classical nonlinear controls
+    "poly2_45", "rff_45", "rff_180",
 ]
 
 
 def build_feature_sources(dataset):
-    """Feature-source specs for a dataset (quantum configs follow configs/<dataset>/)."""
+    """Source specs; quantum sources point to configs/<dataset>/*_best.yml."""
     c = f"configs/{dataset}"
     return {
         "raw":           {"kind": "raw"},
@@ -120,16 +104,13 @@ def build_feature_sources(dataset):
     }
 
 
-# Populated in main() from --dataset; module-level default keeps imports working.
 FEATURE_SOURCES = build_feature_sources(DATASET)
 
 
 def standardize_features(train, val, test):
-    """Per-feature z-scoring (mean 0, unit variance), fit on train only and
-    applied to all splits, matching the LinearSVC probe's StandardScaler. Removes
-    the feature-scale confound so the capacity comparison is about information,
-    not magnitude. Operates on the flattened (C*H*W) feature vector and reshapes
-    back, so spatial structure is preserved for the CNN heads.
+    """Z-score every feature (C*H*W entries) with train statistics; shapes are kept.
+
+    Without it the bare linear/MLP heads would partly compare feature scales.
     """
     (Xtr, ytr), (Xv, yv), (Xt, yt) = train, val, test
     mean = Xtr.reshape(Xtr.shape[0], -1).mean(0, keepdim=True)
@@ -143,20 +124,19 @@ def standardize_features(train, val, test):
 
 
 def _stack(loader):
-    """Concatenate all batches from a DataLoader into (X, y) tensors."""
     xs, ys = [], []
     for x, y in loader:
-        if not isinstance(x, torch.Tensor):
-            x = torch.from_numpy(np.asarray(x))
-        if not isinstance(y, torch.Tensor):
-            y = torch.from_numpy(np.asarray(y))
         xs.append(x.float())
         ys.append(y.long().squeeze())
     return torch.cat(xs), torch.cat(ys)
 
 
 def load_features(source_name, source_spec):
-    """Return ((X_train, y_train), (X_val, y_val), (X_test, y_test), in_channels)."""
+    """((X_train, y_train), (X_val, y_val), (X_test, y_test), in_channels) for one source.
+
+    Non-quantum sources are computed from a fresh, shuffled train loader, so
+    their training-row order differs from run to run.
+    """
     if source_spec["kind"] == "quantum":
         with open(source_spec["config"]) as f:
             cfg = yaml.safe_load(f)
@@ -172,7 +152,6 @@ def load_features(source_name, source_spec):
         (Xt,  yt)  = _stack(test_loader)
         return (Xtr, ytr), (Xv, yv), (Xt, yt), Xtr.shape[1]
 
-    # Both raw and random use the same dataloader path
     cfg = {"dataset": {"name": DATASET, "data_root": "./data", "batch_size": 1000,
                        "num_workers": 0, "download": True, "color_space": "GRAYSCALE"}}
     train_loader, val_loader, test_loader, _ = get_dataloaders(cfg)
@@ -207,8 +186,6 @@ def load_features(source_name, source_spec):
         return (Xtr, ytr), (Xv, yv), (Xt, yt), Xtr.shape[1]
 
     if source_spec["kind"] in ("poly2", "rff"):
-        # Classical nonlinear controls: per-patch degree-2 / RFF maps on the
-        # raw [0,1] image, same patches the random-conv baseline sees.
         if source_spec["kind"] == "poly2":
             fmap = lambda x: poly2_features(x)
         else:
@@ -231,22 +208,13 @@ def load_features(source_name, source_spec):
     raise ValueError(f"Unknown source kind: {source_spec['kind']}")
 
 
-# ---------------------------------------------------------------------------
-# Training
-# ---------------------------------------------------------------------------
-
 def train_head(head, train, val, test, lr, weight_decay, use_scheduler,
                epochs=None, patience=None, batch_size=None,
                grad_clip=GRAD_CLIP, device="cpu", seed=0, return_scores=False):
-    """Train one head with given HPs. Returns dict of val/test metrics from
-    the lowest-val-loss checkpoint.
-
-    With return_scores=True the returned dict also carries `test_scores` and
-    `test_labels`, the per-example arrays the AUC is computed from. Nothing
-    else changes; they are simply no longer discarded, which is what an
-    example-level confidence interval needs.
+    """Train one head (Adam, early stopping on validation loss) and return the
+    val/test metrics of the lowest-validation-loss checkpoint. return_scores
+    also returns the per-example test scores and labels.
     """
-    # Read module globals at call time so --epochs/--batch-size overrides apply.
     if epochs is None: epochs = EPOCHS
     if patience is None: patience = PATIENCE
     if batch_size is None: batch_size = BATCH_SIZE
@@ -305,9 +273,7 @@ def train_head(head, train, val, test, lr, weight_decay, use_scheduler,
         head.load_state_dict(best_state)
     head.eval()
 
-    # Validation AUC at the restored checkpoint, for the A8 sensitivity check
-    # (the search objective is val_acc; this records what val AUC would have
-    # said about the same trial). Uses no RNG, so it changes no other number.
+    # validation AUC of the same checkpoint (used by capacity_repeat_val_auc.py)
     with torch.no_grad():
         val_logits_best = head(Xv)
         if NUM_CLASSES == 2:
@@ -322,7 +288,7 @@ def train_head(head, train, val, test, lr, weight_decay, use_scheduler,
             best_val_auc = roc_auc_score(yv_np, val_scores,
                                          multi_class="ovr", average="macro")
     except ValueError:
-        best_val_auc = float("nan")   # a split with a single class present
+        best_val_auc = float("nan")   # single-class split
 
     with torch.no_grad():
         test_logits = head(Xt)
@@ -350,16 +316,11 @@ def train_head(head, train, val, test, lr, weight_decay, use_scheduler,
     return out
 
 
-# ---------------------------------------------------------------------------
-# Per-cell driver
-# ---------------------------------------------------------------------------
-
 def run_cell(head_name, source_name, train, val, test, in_channels,
              cell_dir, n_trials, seeds, device):
     cell_dir.mkdir(parents=True, exist_ok=True)
     builder, use_scheduler = _head_factory(head_name)
 
-    # Optuna study (one DB per cell, supports resume)
     db_path = cell_dir / "study.db"
     study = optuna.create_study(
         study_name=f"{head_name}_{source_name}",
@@ -387,7 +348,6 @@ def run_cell(head_name, source_name, train, val, test, in_channels,
     best = study.best_params
     best_value = study.best_value
 
-    # Validate top-1 over the provided seeds
     val_dir = cell_dir / "validation"
     val_dir.mkdir(exist_ok=True)
     per_seed = []
@@ -420,15 +380,11 @@ def run_cell(head_name, source_name, train, val, test, in_channels,
     return summary, per_seed
 
 
-# ---------------------------------------------------------------------------
-# Main
-# ---------------------------------------------------------------------------
-
 def _param_count(builder, num_classes, in_channels, dummy_input):
-    """Count params of a freshly built head, with LazyLinear materialised."""
+    """Parameter count of a fresh head (one forward pass materialises LazyLinear)."""
     head = builder(num_classes, 0.0, ACTIVATION, in_channels)
     with torch.no_grad():
-        head(dummy_input)  # materialise LazyLinear
+        head(dummy_input)
     return sum(p.numel() for p in head.parameters())
 
 
@@ -455,8 +411,6 @@ def main():
     if args.batch_size is not None: globals()["BATCH_SIZE"] = args.batch_size
     if args.epochs is not None: globals()["EPOCHS"] = args.epochs
 
-    # Dataset-aware: set the module globals used by load_features and build the
-    # feature-source specs (quantum config paths) for the chosen dataset.
     globals()["DATASET"] = args.dataset
     globals()["FEATURE_SOURCES"] = build_feature_sources(args.dataset)
 
@@ -471,7 +425,6 @@ def main():
     cells_dir = out_dir / "cells"
     cells_dir.mkdir(exist_ok=True)
 
-    # Load all feature sources upfront (cached, fast)
     print("\nLoading feature sources...")
     features = {}
     for src in args.sources:
@@ -486,7 +439,6 @@ def main():
               f"train={train[0].shape[0]}  val={val[0].shape[0]}  test={test[0].shape[0]}  "
               f"({time.time()-t0:.1f}s)")
 
-    # Run all cells
     summary_rows = []
     per_seed_rows = []
     t_sweep0 = time.time()
@@ -497,7 +449,7 @@ def main():
             cell_dir = cells_dir / f"{head}__{src}"
             print(f"\n=== {head} on {src} ===")
             if (cell_dir / "summary.json").exists():
-                print(f"  [skip] already complete")  # idempotent resume/top-up
+                print(f"  [skip] already complete")
                 continue
             t0 = time.time()
             summary, per_seed = run_cell(
@@ -505,7 +457,6 @@ def main():
                 cell_dir, args.n_trials, args.seeds, device,
             )
 
-            # Param count (materialise LazyLinear)
             builder, _ = _head_factory(head)
             try:
                 n_params = _param_count(builder, NUM_CLASSES, in_ch, dummy.cpu())
@@ -533,7 +484,7 @@ def main():
             for m in per_seed:
                 per_seed_rows.append({"head": head, "source": src, **m})
 
-    # Write aggregated CSVs
+    # only this run's cells; see rebuild_capacity_summary.py
     summary_csv = out_dir / "summary.csv"
     per_seed_csv = out_dir / "per_seed.csv"
     with open(summary_csv, "w", newline="") as f:

@@ -1,5 +1,5 @@
 # TissueMNIST end-to-end DAQCNN, digital + ZZ, four kernels.
-# Topology fixed to grid+chain+horizontal+kings (val-selected 4k winner).
+# Topology fixed to grid+chain+horizontal+kings (as in the capacity sweep: test-scored probe set).
 dataset:
   name: tissue_mnist
   data_root: ./data

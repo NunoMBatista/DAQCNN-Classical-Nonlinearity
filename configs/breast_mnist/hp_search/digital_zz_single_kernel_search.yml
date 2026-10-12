@@ -22,7 +22,7 @@ search_space:
       - ["star"]
       - ["grid"]
 
-  # === Optimizer (Exact match to other searches) ===
+  # === Optimizer ===
   optim.lr:
     type: loguniform
     low:  1.0e-8

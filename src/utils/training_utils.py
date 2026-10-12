@@ -1,27 +1,11 @@
-"""
-Shared training utilities for DAQCNN.
-
-Includes common training helpers and the shared classification head factory.
-"""
+"""Device resolution and the classifier heads."""
 
 import torch
 import torch.nn as nn
 
 
 def resolve_device(cfg: dict, verbose: bool = True) -> str:
-    """Resolve the torch device from config, with CPU fallback.
-
-    Reads ``model.classical_device`` from the config dict. Accepts "auto",
-    "cuda", or "cpu". If "cuda" is requested but not available, falls back
-    to "cpu" with an optional warning.
-
-    Args:
-        cfg: Loaded YAML config dict.
-        verbose: If True, prints the resolved device and any fallback warning.
-
-    Returns:
-        Device string: "cuda" or "cpu".
-    """
+    """model.classical_device from the config ("auto", "cuda" or "cpu"), falling back to CPU."""
     requested = cfg.get("model", {}).get("classical_device", "auto")
     if requested == "auto":
         device = "cuda" if torch.cuda.is_available() else "cpu"
@@ -37,14 +21,10 @@ def resolve_device(cfg: dict, verbose: bool = True) -> str:
 
 
 def build_classification_head(in_channels, num_classes, dropout=0.1, activation="relu", hidden_channels=64):
-    """Build the shared CNN classification head.
+    """The CNN head: Conv2x2-BN-Act, MaxPool2, Conv2x2-Act, Dropout, Flatten, Dropout, Linear.
 
-    Args:
-        in_channels: Number of input feature channels (M*N).
-        num_classes: Number of output logits.
-        dropout: Dropout probability.
-        activation: "relu" or "gelu".
-        hidden_channels: Number of filters in the first two Conv2d layers.
+    hidden_channels=64 is the end-to-end head and CNN-64 of the capacity sweep;
+    16 is CNN-16.
     """
     act_fn = nn.GELU() if activation.lower() == "gelu" else nn.ReLU()
     return nn.Sequential(
@@ -61,24 +41,14 @@ def build_classification_head(in_channels, num_classes, dropout=0.1, activation=
     )
 
 
-# ---------------------------------------------------------------------------
-# Capacity-sweep head variants
-# All input tensors are 4D (B, C, H, W); the initial Flatten handles that.
-# LazyLinear infers the input dim on the first forward pass, so these heads
-# work for any feature-source dimensionality without changes.
-# ---------------------------------------------------------------------------
+# Capacity-sweep heads. They flatten (B, C, H, W) inputs, and LazyLinear
+# infers the input width on the first forward pass.
 
 def _activation(name: str) -> nn.Module:
     return nn.GELU() if name.lower() == "gelu" else nn.ReLU()
 
 
-def build_linear_head(num_classes: int, **_ignored) -> nn.Sequential:
-    """Pure linear classifier on flattened features.
-
-    The Adam-trained analogue of the LinearSVC probe. Accepts and ignores
-    dropout/activation kwargs so it shares a uniform call signature with
-    the other head builders.
-    """
+def build_linear_head(num_classes: int) -> nn.Sequential:
     return nn.Sequential(
         nn.Flatten(),
         nn.LazyLinear(num_classes),
@@ -87,7 +57,6 @@ def build_linear_head(num_classes: int, **_ignored) -> nn.Sequential:
 
 def build_mlp1_head(num_classes: int, hidden: int = 32, dropout: float = 0.5,
                     activation: str = "gelu") -> nn.Sequential:
-    """Single hidden layer MLP head."""
     return nn.Sequential(
         nn.Flatten(),
         nn.LazyLinear(hidden),
@@ -99,7 +68,6 @@ def build_mlp1_head(num_classes: int, hidden: int = 32, dropout: float = 0.5,
 
 def build_mlp2_head(num_classes: int, h1: int = 64, h2: int = 32,
                     dropout: float = 0.5, activation: str = "gelu") -> nn.Sequential:
-    """Two hidden layer MLP head."""
     return nn.Sequential(
         nn.Flatten(),
         nn.LazyLinear(h1),
@@ -110,5 +78,3 @@ def build_mlp2_head(num_classes: int, h1: int = 64, h2: int = 32,
         nn.Dropout(dropout),
         nn.Linear(h2, num_classes),
     )
-
-

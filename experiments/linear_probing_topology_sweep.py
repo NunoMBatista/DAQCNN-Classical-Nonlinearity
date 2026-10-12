@@ -1,22 +1,12 @@
-"""Linear probing sweep over (topology, encoding_mode).
+"""Linear probe (standardised LinearSVC, C=1) of the frozen features for every
+topology and encoding: 8 single topologies and 5 four-kernel sets x Digital-Z,
+Digital-ZZ, Analog-Z, Analog-ZZ. Reports test accuracy and AUC per cell.
 
-For each (topology, encoding) pair we build an in-memory config, locate
-the matching quantum feature cache, extract the corresponding channels,
-and fit a LinearSVC probe. The sweep covers:
+The probe is a representational measure: C is not tuned, which understates
+high-dimensional maps (probe_zz_decomposition.py tunes it on validation).
 
-  - 1-kernel scale: 8 topologies x 3 encoding modes (Digital-Z,
-    Digital-ZZ, Analog-ZZ) = 24 cells.
-  - 4-kernel scale: 5 topology sets (g+c+h+{kings, vertical, cross,
-    ring, star}) x 3 encoding modes = 15 cells.
-
-Output CSV columns: scale, encoding, topology_set, dim, acc, auc.
-
-The point of this sweep is to make the encoding comparison topology-
-controlled: at matched topology, does analog encoding produce more
-linearly-separable features than digital? Earlier probing fixed
-topology=kings for all encodings (fair but arbitrary); the per-encoding
-CNN-best topology run is unfair (confounds topology with encoding).
-This sweep gives us both views from the same data.
+    python experiments/linear_probing_topology_sweep.py --dataset breast_mnist \
+        --output-csv outputs/paper_results/linear_probing/breast_mnist_topology_sweep.csv
 """
 
 import argparse
@@ -50,7 +40,6 @@ ENCODINGS = [
     {"name": "Analog-ZZ",  "encoding_mode": "analog",  "include_correlators": True},
 ]
 
-# 4-kernel sets — same ones used in the HP search (1h / 1i)
 TOPOLOGIES_4K = [
     ["grid", "chain", "horizontal", "kings"],
     ["grid", "chain", "horizontal", "vertical"],
@@ -144,7 +133,7 @@ def main():
     rows = []
 
     if args.scale in ("1k", "both"):
-        print("\n=== 1-kernel sweep: 8 topologies x 3 encodings ===")
+        print("\n=== 1-kernel sweep: 8 topologies x 4 encodings ===")
         for enc in ENCODINGS:
             print(f"\n[{enc['name']}]")
             for t in TOPOLOGIES_1K:
@@ -162,7 +151,7 @@ def main():
                 })
 
     if args.scale in ("4k", "both"):
-        print("\n=== 4-kernel sweep: 5 topology sets x 3 encodings ===")
+        print("\n=== 4-kernel sweep: 5 topology sets x 4 encodings ===")
         for enc in ENCODINGS:
             print(f"\n[{enc['name']}]")
             for topos in TOPOLOGIES_4K:

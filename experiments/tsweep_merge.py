@@ -1,10 +1,8 @@
-"""Merge the A9 evolution-time sweep chunks, one arm at a time.
+"""Merge a directory holding the chunks of several caches (the evolution-time
+sweep): group the chunks by cache name and run merge_quantum_chunks.py once per
+cache, which requires a directory of one cache's chunks.
 
-The chunk directory holds chunks from several (encoding, T) arms mixed
-together, and merge_quantum_chunks.py requires that every chunk in a directory
-belong to ONE cache (its first gate is cache-identity agreement). This groups
-chunks by the cache prefix encoded in their filename and runs the merger once
-per arm, in a temporary per-arm directory of symlinks.
+    python experiments/tsweep_merge.py --chunk-dir DIR --out-dir data/quantum_datasets
 """
 import argparse, os, re, subprocess, sys, tempfile
 from collections import defaultdict

@@ -1,27 +1,19 @@
-"""
-merge_quantum_chunks.py
+"""Reassemble the .chunk.npz files written by create_quantum_dataset.py in chunk
+mode into one cache, identical to what a single run would have written.
 
-Reassemble the partial ".chunk.npz" files produced by
-create_quantum_dataset.py --split/--start/--end into a single canonical
-quantum-dataset cache, identical to what a monolithic run would have written.
+Nothing is written unless every check passes:
+  1. all chunks agree on the cache identity and channel map;
+  2. per split, the chunks tile [0, split_total) exactly (no gap, no overlap);
+  3. each chunk's labels equal the dataset's own labels for its index range
+     (a free check that every chunk sits at the right position);
+  4. all three splits are present.
 
-The merge refuses to produce output unless every safety check passes:
-  1. All chunks agree on the cache-defining parameters.
-  2. For each split, the chunks tile [0, split_total) exactly: start at 0,
-     contiguous (no gap, no overlap), and end at split_total.
-  3. Independent ordering check: each chunk's labels equal the ground-truth
-     dataset labels for its index range (labels need no quantum computation,
-     so they are a free checksum that the slice is correctly positioned).
-  4. All three splits (train/val/test) are present and complete.
-
-Usage:
-    python experiments/merge_quantum_chunks.py \
-        --chunk-dir data/quantum_datasets/chunks_pneumonia_analog \
-        --out-dir   data/quantum_datasets
+    python experiments/merge_quantum_chunks.py --chunk-dir DIR --out-dir data/quantum_datasets
 """
 import argparse
 import json
 import sys
+from datetime import datetime
 from pathlib import Path
 
 import numpy as np
@@ -33,7 +25,8 @@ if str(PROJECT_ROOT) not in sys.path:
 from experiments.create_quantum_dataset import generate_output_filename
 from src.utils.data import load_medmnist_dataset
 
-# Parameters that define the cache identity; every chunk must agree on these.
+# cache identity; every chunk must agree on these (the noise_* keys are constant
+# but part of the published sidecar format)
 IDENTITY_KEYS = [
     "dataset_name", "image_size", "in_channels", "color_space",
     "kernel_size", "stride", "kernel_topology_names", "num_kernels",
@@ -44,9 +37,9 @@ IDENTITY_KEYS = [
 SPLITS = ["train", "val", "test"]
 
 
-def ground_truth_labels(dataset_name, split, data_root, image_size):
-    """Ordered integer labels for a split, straight from the dataset (no quantum)."""
-    ds = load_medmnist_dataset(dataset_name, split, data_root, image_size=image_size)
+def ground_truth_labels(dataset_name, split, data_root):
+    """Labels of a split in dataset order."""
+    ds = load_medmnist_dataset(dataset_name, split, data_root)
     labels = np.asarray(ds.labels).reshape(-1).astype(np.int64)
     assert len(labels) == len(ds), "label array length disagrees with dataset length"
     return labels
@@ -64,7 +57,6 @@ def main():
     assert chunk_files, f"No *.chunk.npz files found in {chunk_dir}"
     print(f"Found {len(chunk_files)} chunk file(s) in {chunk_dir}")
 
-    # Load every chunk's metadata + arrays.
     chunks = []
     for f in chunk_files:
         z = np.load(f, allow_pickle=True)
@@ -89,7 +81,6 @@ def main():
     print("Check 1 OK: all chunks share the same cache parameters and channel map.")
 
     dataset_name = ref["dataset_name"]
-    image_size = ref["image_size"]
 
     merged = {}
     counts = {}
@@ -120,7 +111,7 @@ def main():
         )
 
         # ---- Check 3: independent label checksum vs ground truth ----
-        gt = ground_truth_labels(dataset_name, split, args.data_root, image_size)
+        gt = ground_truth_labels(dataset_name, split, args.data_root)
         assert len(gt) == split_total, (
             f"Check 3 FAILED ({split}): dataset has {len(gt)} images, chunks "
             f"claim split_total={split_total}"
@@ -133,7 +124,6 @@ def main():
                 f"or mis-positioned"
             )
 
-        # ---- Concatenate in ascending-start order ----
         feats = np.concatenate([c["features"] for c in split_chunks], axis=0)
         lbls = np.concatenate([np.asarray(c["labels"]).reshape(-1) for c in split_chunks], axis=0)
         assert feats.shape[0] == split_total == lbls.shape[0]
@@ -143,8 +133,7 @@ def main():
         print(f"Checks 2+3 OK ({split}): {len(split_chunks)} chunk(s) tile [0,{split_total}); "
               f"labels match ground truth. shape {feats.shape}")
 
-    # ---- Build full canonical metadata (identical shape to a monolithic run) ----
-    from datetime import datetime
+    # same metadata as a single run
     metadata = {k: ref[k] for k in IDENTITY_KEYS}
     metadata["channel_kernel_map"] = ref["channel_kernel_map"]
     metadata["created_at"] = datetime.now().isoformat()

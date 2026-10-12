@@ -136,3 +136,6 @@ outputs/paper_results/camera_ready/
 
 # Cluster job scripts (account names, paths); kept local.
 mcc_*.sh
+
+# Files removed from the release, kept locally
+local_archive/

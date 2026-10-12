@@ -1,28 +1,11 @@
-"""Recompute validation metrics for every end-to-end validation seed from its
-saved checkpoint, so the camp representative in Table III can be selected on a
-TEN-SEED-MEAN validation metric instead of the single search run's val_acc.
+"""Recompute validation (and test) metrics of every end-to-end validation seed
+from its saved checkpoint, for the ten-seed validation selector of
+val_selected_e2e.py, and save the per-example probabilities used by
+e2e_example_level_intervals.py.
 
-Why. `val_selected_e2e.py` selects each camp's representative by
-`search_value`, the validation accuracy of the one Optuna search run that won,
-a max over 200 trials on 78 (Breast) or 524 (Pneumonia) images. That selector is
-quantized (1/78) and routinely tied. But every validated seed left a
-`best_model_seed_k.pt` checkpoint, and the validation split is deterministic, so
-a ten-seed-mean validation AUC and accuracy are one forward pass away. That is
-the same rule A2 applied to the capacity sweep.
-
-Control planted before any number is read: the same checkpoint is also run on
-the TEST split and its AUC must reproduce `validation_summary.json`'s stored
-per-seed `test_auc.values` entry (the runner restored the best checkpoint before
-its test evaluation, so they must agree to float precision). A row whose test
-AUCs do not reproduce is flagged and the selector refuses it.
-
-Bonus: per-example test probabilities are saved per seed, which is what the
-example-level intervals R4 asked for (A7) need and which were never kept.
-
-TissueMNIST is REFUSED here. Its quantum caches are 22-46 GB compressed and
-must never be opened with np.load on this machine (OOM, 2026-09-19); the cache
-loader used by the end-to-end runner does exactly that. Tissue's selection is
-unambiguous under the existing rule (validation and test pick the same rows).
+Check: the recomputed test AUC must reproduce the stored per-seed value (up to
+two tied-pair flips, CPU vs GPU); rows that fail are flagged. BreastMNIST and
+PneumoniaMNIST only (the TissueMNIST caches are too large to load locally).
 
     python experiments/e2e_val_reinference.py --datasets BreastMNIST PneumoniaMNIST
 """
@@ -53,22 +36,17 @@ DEVICE = "cpu"
 
 
 def build_loaders_and_factory(cfg):
-    """Return (val_loader, test_loader, make_model) for one validated config.
-
-    Mirrors run_single_seed (quantum / cached rows) and run_classical_baseline
-    (random, trainable, raw rows) in src/models, minus training.
-    """
-    cfg = json.loads(json.dumps(cfg))          # private copy
+    """(val_loader, test_loader, make_model) for one validated config, built as in
+    run_single_seed / run_classical_baseline."""
+    cfg = json.loads(json.dumps(cfg))
     cfg["dataset"]["num_workers"] = 0
     model_cfg = cfg["model"]
-    # The May-2026 quantum runs predate the `architecture` key; a topology list
-    # is present exactly when the run built a DAQCNN (cached path).
+    # older run configs have no architecture key; a topology list means DAQCNN
     is_daqcnn = model_cfg.get("architecture") == "original" or \
         model_cfg.get("kernel_topology_names") is not None
 
     if is_daqcnn:
-        # Quantum rows and the poly-2 / RFF rows, which live in classical
-        # caches with a synthetic topology name and go through the same path.
+        # quantum rows and the poly-2 / RFF rows (cached the same way)
         cache = find_cached_quantum_dataset(cfg)
         if cache is None:
             raise FileNotFoundError(f"no cache for {model_cfg['kernel_topology_names']}")
@@ -80,7 +58,7 @@ def build_loaders_and_factory(cfg):
         def make_model():
             m = DAQCNN(
                 num_classes=num_classes,
-                kernel_size=model_cfg.get("kernel_size", 2),
+                kernel_size=model_cfg.get("kernel_size", 3),
                 stride=model_cfg.get("stride", 1),
                 kernel_topology_names=model_cfg.get("kernel_topology_names"),
                 scaling_factor=model_cfg.get("scaling_factor", 1.0),
@@ -91,7 +69,6 @@ def build_loaders_and_factory(cfg):
                 quantum_device=model_cfg.get("quantum_device", "default.qubit"),
                 quantum_device_kwargs=model_cfg.get("quantum_device_kwargs"),
                 classical_device=DEVICE,
-                in_channels=model_cfg.get("in_channels", 1),
                 interface=model_cfg.get("interface", "torch"),
                 include_correlators=model_cfg.get("include_correlators", False),
                 head_hidden_channels=model_cfg.get("head_hidden_channels", 64),
@@ -101,7 +78,6 @@ def build_loaders_and_factory(cfg):
             return m
         return val_loader, test_loader, make_model
 
-    # Classical baseline rows: random / trainable filters, raw pixels.
     _, val_loader, test_loader, n_classes = get_dataloaders(cfg)
     num_classes = model_cfg.get("num_classes", n_classes)
 
@@ -122,7 +98,7 @@ def build_loaders_and_factory(cfg):
 
 
 def load_checkpoint_into(model, path, probe_batch):
-    """Materialize any lazy layers with one forward pass, then load weights."""
+    """One forward pass materialises LazyLinear, then the weights are loaded."""
     model.eval()
     with torch.no_grad():
         model(probe_batch)
@@ -153,10 +129,9 @@ def run_row(dataset, model_name, run_dir):
         model = load_checkpoint_into(make_model(), ck, probe)
         v = evaluate(model, val_loader, DEVICE, "Val", compute_full_metrics=True)
         t = evaluate(model, test_loader, DEVICE, "Test", compute_full_metrics=True)
-        # The stored per-seed lists are in seed order 0..n-1. The stored AUCs
-        # were computed on a GPU; a CPU float32 conv can reorder one near-tied
-        # pair, which moves a binary AUC by exactly 1/(n_pos*n_neg) (Breast:
-        # 2.09e-4). Accept up to two such flips; accuracy must be exact.
+        # the stored AUCs come from a GPU: a CPU run can swap a near-tied pair,
+        # which moves a binary AUC by 1/(n_pos*n_neg); accept two such flips,
+        # accuracy must match exactly
         y = np.asarray(t["labels"])
         granule = 1.0 / (y.sum() * (len(y) - y.sum())) if len(np.unique(y)) == 2 else 1e-4
         auc_diff = abs(t["auc"] - stored_auc[i])

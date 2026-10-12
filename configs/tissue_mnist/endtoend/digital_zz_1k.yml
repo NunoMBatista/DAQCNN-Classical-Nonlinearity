@@ -1,5 +1,5 @@
 # TissueMNIST end-to-end DAQCNN, digital + ZZ, single kernel.
-# Topology fixed to kings (the val-selected winner from verify_tissue_advantage).
+# Topology fixed to kings (as in the capacity sweep: test-scored probe winner).
 dataset:
   name: tissue_mnist
   data_root: ./data

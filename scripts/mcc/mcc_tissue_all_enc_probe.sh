@@ -14,5 +14,5 @@
 # so a kill never loses completed work. ~5h per cache at full data.
 cd $HOME/MoT-DAQCNN
 export OMP_NUM_THREADS=16
-.venv/bin/python experiments/probe_tissue_all_encodings.py --cache "$CACHE"
+.venv/bin/python experiments/probe_tissue.py all-encodings --cache "$CACHE"
 echo "TA_ALLENC_${CACHE}_EXIT $?"

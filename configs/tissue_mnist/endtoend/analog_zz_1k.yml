@@ -1,6 +1,6 @@
 # TissueMNIST end-to-end DAQCNN, analog + ZZ, single kernel.
 # Topology fixed to star (the val-selected analog-ZZ winner from
-# probe_tissue_analog_topology: val 0.8170, the best of all 8 topologies).
+# probe_tissue.py analog-topology: val 0.8170, the best of all 8 topologies).
 dataset:
   name: tissue_mnist
   data_root: ./data

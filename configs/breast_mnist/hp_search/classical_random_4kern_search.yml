@@ -9,7 +9,7 @@ search_space:
     type: fixed
     value: true
 
-  # === Optimizer (Matching your ZZ search) ===
+  # === Optimizer ===
   optim.lr:
     type: loguniform
     low: 1.0e-8

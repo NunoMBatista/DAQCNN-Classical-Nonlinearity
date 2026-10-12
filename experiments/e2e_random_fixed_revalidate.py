@@ -1,27 +1,14 @@
-"""Re-run the ten-seed validation of the end-to-end "Random x45 / x180" rows with
-the random filters actually FROZEN.
+"""Re-run the ten-seed validation of the end-to-end Random x45 / x180 rows
+(BreastMNIST, PneumoniaMNIST) with the random filters frozen.
 
-What went wrong (verified 2026-09-20 from the checkpoints). The search configs
-for these rows set `model.fixed_random_filters: {type: fixed, value: true}`.
-`build_trial_config` applies fixed entries during the 200-trial search, so the
-search selected hyperparameters for a frozen-filter model. `validate_top_k`
-then re-applies only `trial.params`, which never contains a fixed entry, and
-builds the validation config from `base_config.yml`, which has no such key. The
-ten reported seeds were therefore trained with `fixed_random_filters=False`:
-every final checkpoint's Adam state holds an update slot for `conv.weight`.
-TissueMNIST is unaffected (its base configs carry the flag).
+The searches for these rows ran with model.fixed_random_filters fixed to true,
+but the original validation step dropped `fixed` search-space entries, so the
+validated models had trainable filters. This keeps the searched hyperparameters,
+sets the flag and re-trains the same seeds. Every seed's checkpoint is checked
+for an Adam slot on the conv weights (frozen = no slot); --control first trains
+one seed without the flag to show that the check detects trainable filters.
 
-The repair is the step that went wrong, nothing more: keep the searched
-hyperparameters, set the flag, run the same ten seeds through the same runner.
-
-Controls planted before any number is read:
-  * `--control` first trains one seed WITHOUT the flag in this harness and
-    asserts Adam DID update the filters, so the instrument can tell the two
-    cases apart.
-  * Every real seed asserts the opposite from its own checkpoint: no Adam slot
-    of the conv weight's shape.
-
-Writes under outputs/camera_ready/e2e_random_fixed/ (never paper_results).
+Writes outputs/camera_ready/e2e_random_fixed/<dataset>__<row>/.
 
     python experiments/e2e_random_fixed_revalidate.py --dataset BreastMNIST --row "Random x45" --control
 """

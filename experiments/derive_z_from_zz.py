@@ -1,17 +1,10 @@
-"""
-derive_z_from_zz.py
+"""Derive a Z-only cache from a Z+ZZ cache by keeping the <Z_i> channels.
 
-Derive a Z-only quantum-feature cache from an existing ZZ cache by selecting the
-single-qubit <Z_i> channels. The <Z_i> expectation values are computed from the
-same final state regardless of whether <Z_iZ_j> is also measured, so the Z-only
-features are exactly the Z channels of the ZZ cache -- no quantum recomputation.
+<Z_i> comes from the same final state whether or not <Z_i Z_j> is measured, so
+no quantum recomputation is needed. Analog caches match a standalone Z run bit
+for bit; digital ones to ~1e-16 (cross-process float noise).
 
-For analog caches this is bit-exact (analog simulation is deterministic). For
-digital caches the sliced Z equals a standalone digital_z run to ~1e-16 (intrinsic
-cross-process float nondeterminism), which is irrelevant downstream.
-
-Usage:
-    python experiments/derive_z_from_zz.py --zz path/to/<cache>_zz[_analog].npz
+    python experiments/derive_z_from_zz.py --zz data/quantum_datasets/<cache>_zz[_analog].npz
 """
 import argparse
 import json
@@ -41,10 +34,8 @@ def derive_z(zz_path, out_dir=None):
     assert len(z_idx) == n_topo * n_qubits, (
         f"expected {n_topo * n_qubits} Z channels, found {len(z_idx)}"
     )
-    # Z indices must be ascending (sanity: we slice in cache order)
     assert z_idx == sorted(z_idx)
 
-    # New channel map: the Z entries, renumbered 0..len-1.
     new_cmap = []
     for new_ch, old in enumerate(z_idx):
         e = dict(cmap[old])
@@ -62,7 +53,7 @@ def derive_z(zz_path, out_dir=None):
     new_meta["quantum_out_channels"] = len(z_idx)
     new_meta["channel_kernel_map"] = new_cmap
     new_meta["created_at"] = datetime.now().isoformat()
-    new_meta["derived_from"] = zz_path.name  # provenance
+    new_meta["derived_from"] = zz_path.name
 
     out_dir = Path(out_dir) if out_dir else zz_path.parent
     out_path = out_dir / generate_output_filename(new_meta)

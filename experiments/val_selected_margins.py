@@ -1,30 +1,19 @@
-"""Cross-camp margins with the representative source selected on VALIDATION.
+"""Quantum-minus-classical capacity-sweep margins with each camp's
+representative selected on validation, not test (Figs. 3-4).
 
-Reviewer 4 (#3) objects that the quantum-vs-classical margins in the capacity
-figure pick the best source in each camp by *test* AUC, which is selection on
-the test set. This script re-derives every margin by selecting the camp
-representative on validation accuracy (the quantity the sweep actually
-optimised) and then reporting that fixed choice's test AUC.
+Rule, fixed in advance: for each (dataset, head, camp) the representative is
+the source with the highest mean validation accuracy over validation seeds
+1-9 (ties: the order in CAMPS); the reported value is its mean test AUC over
+all 10 seeds. Seed 0 is left out of the selection because it often repeats the
+Optuna best trial exactly, so its validation accuracy is the maximised value.
+The test-selected margin is printed alongside for comparison.
 
-Selection rule, fixed in advance:
-  for each (dataset, head, camp): representative = argmax over sources of the
-  mean validation accuracy across validation seeds 1..9; ties broken by the
-  source order listed in CAMPS. Seed 0 is excluded because it reproduces the
-  Optuna best trial exactly in 90 of 195 cells, so its validation accuracy is
-  the maximised value there rather than a fresh estimate. The reported number
-  is the selected source's mean test AUC over all 10 seeds, matching the
-  published table.
+Reads the per-seed JSONs of the sweeps; no retraining.
 
-Caveat to state in the paper: the sweep stored val accuracy, not val AUC, so
-selection and reporting use different metrics (see tracker item A8).
-
-Everything is read from the per-seed JSONs, which are the primitive the summary
-CSVs were aggregated from. No retraining.
-
-Run from the repo root:
     python experiments/val_selected_margins.py
-Writes outputs/camera_ready/val_selected_margins.csv (gitignored).
+Writes outputs/camera_ready/val_selected_margins.csv.
 """
+import argparse
 import csv
 import glob
 import json
@@ -34,15 +23,13 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 HEADS = ["linear", "mlp1", "mlp2", "cnn_small", "cnn_large"]
 
-# The two camps compared in Fig. 3. `raw` is the grey anchor and belongs to
-# neither camp, exactly as in plot_capacity_grid.py.
+# the two camps; "raw" belongs to neither
 QUANTUM = ["digital_z_1k", "digital_zz_1k", "digital_zz_4k",
            "analog_z_1k", "analog_zz_1k", "analog_zz_4k"]
 CLASSICAL = ["random_9", "random_45", "random_180",
              "poly2_45", "rff_45", "rff_180"]
 CAMPS = [("Q", QUANTUM), ("C", CLASSICAL)]
 
-# Tissue ran on MCC; its per-seed files came back in the retrieval dump.
 DATASETS = [
     ("BreastMNIST", "outputs/paper_results/capacity_sweep_std/breast_mnist"),
     ("PneumoniaMNIST", "outputs/paper_results/capacity_sweep_std/pneumonia_mnist"),
@@ -63,7 +50,6 @@ def load_cells(sweep_dir):
             rec = json.load(open(path))
             val_accs[rec["seed"]] = rec["val_acc"]
             test_aucs.append(rec["test_auc"])
-        # Selection metric drops the Optuna search seed; see module docstring.
         held_out = [v for seed, v in val_accs.items() if seed != 0]
         cells[(head, source)] = {
             "n_seeds": len(seed_files),
@@ -88,11 +74,12 @@ def pick(cells, head, sources, key):
 
 
 def tag_margin(margin):
-    """Format a signed margin the way the figure labels it: Q.0136 / C.0061."""
+    """Q.0136 (quantum ahead by 0.0136) or C.0061 (classical ahead)."""
     return ("Q" if margin >= 0 else "C") + f"{abs(margin):.4f}"[1:]
 
 
 def main():
+    argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter).parse_args()
     rows = []
     disagreements = []
     for dname, sweep_dir in DATASETS:
@@ -104,9 +91,7 @@ def main():
             row = {"dataset": dname, "head": head}
             incomplete = False
             for tag, sources in CAMPS:
-                # the fix: select on validation, report test
                 val_src = pick(cells, head, sources, "val_acc_mean")
-                # the bug being replaced: select on test, report test
                 test_src = pick(cells, head, sources, "test_auc_mean")
                 if val_src is None:
                     incomplete = True
@@ -119,7 +104,7 @@ def main():
                 row[f"{tag}_test_test_auc"] = cells[(head, test_src)]["test_auc_mean"]
             if incomplete:
                 continue
-            # signed margin, positive = quantum ahead
+            # positive = quantum ahead
             new = row["Q_val_test_auc"] - row["C_val_test_auc"]
             old = row["Q_test_test_auc"] - row["C_test_test_auc"]
             row["val_selected_margin"] = new

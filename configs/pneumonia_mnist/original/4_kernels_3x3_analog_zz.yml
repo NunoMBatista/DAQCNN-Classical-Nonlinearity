@@ -1,4 +1,4 @@
-# BreastMNIST DAQCNN (4 Kernels)
+# PneumoniaMNIST DAQCNN (4 Kernels)
 # Features: Analog Encoding (Local Detuning) + ZZ Correlators
 
 dataset:
@@ -14,7 +14,7 @@ model:
   num_classes: 2
   kernel_size: 3
   stride: 3
-  # Using the same 4 kernels as your previous best TS-MoE run
+  # the search config tunes the fourth topology
   kernel_topology_names: ["grid", "chain", "horizontal", "kings"]
   scaling_factor: 1.0
   evolution_time: 2.5
