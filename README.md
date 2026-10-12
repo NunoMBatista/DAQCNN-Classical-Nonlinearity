@@ -165,8 +165,8 @@ trial trains one seed; the validated trials are re-trained on every
 | TissueMNIST fairness re-check | `verify_tissue_advantage.py [SEED]` (seeds 0-5) |
 
 All scripts are in `experiments/`. The TissueMNIST caches are 23 to 47 GB; the
-scripts that load them need a large-memory machine. `scripts/mcc/` holds the
-cluster job scripts used for those runs.
+scripts that load them need a large-memory machine (the ZZ-cache jobs used about
+200 GB of RAM).
 
 ## Tests
 
