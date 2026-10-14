@@ -1,5 +1,10 @@
 # DAQCNN with matched classical nonlinearity
 
+[![tests](https://github.com/NunoMBatista/DAQCNN-Classical-Nonlinearity/actions/workflows/tests.yml/badge.svg)](https://github.com/NunoMBatista/DAQCNN-Classical-Nonlinearity/actions/workflows/tests.yml)
+[![Python 3.12](https://img.shields.io/badge/python-3.12-blue)](requirements.txt)
+[![PennyLane 0.44](https://img.shields.io/badge/PennyLane-0.44-blue)](https://pennylane.ai)
+[![License: MIT](https://img.shields.io/badge/license-MIT-green)](LICENSE)
+
 Code for the paper *Reproducing the Apparent Quantum-Kernel Advantage of
 Rydberg-Atom DAQCNN Using Classical Nonlinearity* (accepted at IEEE QAI 2026).
 
@@ -9,6 +14,24 @@ trains only a classical head on the resulting features. This repository runs
 it on BreastMNIST, PneumoniaMNIST and TissueMNIST and compares it with random
 projections, a degree-2 polynomial map and random Fourier features of the
 same dimension, across classifier heads of increasing capacity.
+
+![DAQCNN pipeline](assets/pipeline.png)
+
+## Main result
+
+Most of the apparent quantum-kernel advantage is reproduced by classical
+nonlinear features of the same dimension.
+
+- On BreastMNIST and PneumoniaMNIST, equal-dimension random Fourier features
+  largely reproduce the quantum lead over a linear random projection, across
+  five classifier heads from linear to CNN.
+- Only on TissueMNIST does the quantum kernel lead matched classical
+  nonlinearity beyond a 0.01 AUC margin: at the linear head (AUC 0.828 against
+  0.814). A trained CNN head reverses it (end to end, a degree-2 polynomial map
+  scores 0.896 against 0.880).
+- The protocol carries over to any quantum feature map: compare it with tuned
+  classical nonlinear maps of equal dimension, across classifier capacities,
+  and select models on validation data.
 
 Experiment outputs and the precomputed feature caches (about 80 GB) are not
 included; the commands below regenerate them.
@@ -84,6 +107,33 @@ pip install -r requirements.txt
 The MedMNIST datasets download into `data/` on first use. Run every command
 from the repository root.
 
+## Quick start
+
+Quantum features and their classical controls for two random images, in a few
+seconds on a laptop (from the repository root, e.g. in `python`):
+
+```python
+import torch
+from src.layers.quantum_convolution import QuantumConv2d
+from src.utils.classical_nonlinear_features import poly2_features, rff_features
+
+images = torch.rand(2, 1, 28, 28)  # two 28x28 grayscale images in [0, 1]
+
+# One nine-atom Rydberg kernel per 3x3 patch, reading out <Z_i> and <Z_i Z_j>
+qconv = QuantumConv2d(
+    kernel_size=3, stride=3, kernel_topology_names=["kings"],
+    evolution_time=2.5, include_correlators=True, encoding_mode="digital",
+    quantum_device="lightning.qubit",
+)
+with torch.no_grad():
+    quantum = qconv(images)
+print(quantum.shape)                  # torch.Size([2, 45, 9, 9])
+
+# Classical nonlinear controls of the same shape
+print(poly2_features(images).shape)   # torch.Size([2, 45, 9, 9])
+print(rff_features(images, 45).shape) # torch.Size([2, 45, 9, 9])
+```
+
 ## Workflow
 
 **1. Cache the quantum features.** Simulating the circuits for every batch is
@@ -101,6 +151,9 @@ subset of them. Z-only caches are sliced from Z+ZZ caches for free
 `experiments/merge_quantum_chunks.py` joins the chunks. The poly-2 and RFF
 features are cached in the same format with
 `experiments/create_classical_cache.py --dataset <name> --source poly2_45|rff_45|rff_180`.
+Analog caches are the expensive step (the circuits run one patch at a time);
+the PneumoniaMNIST and TissueMNIST ones were built on an HPC cluster in chunk
+mode.
 
 **2. Train.** The end-to-end search trains on the cached features (it stops if
 no cache matches):
