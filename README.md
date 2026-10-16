@@ -47,8 +47,8 @@ under
 H(t) = \frac{\Omega(t)}{2} \sum_i X_i \;-\; \Delta(t) \sum_i \hat{n}_i \;+\; \sum_{i < j} \frac{C_6}{r_{ij}^6} \, \hat{n}_i \hat{n}_j
 ```
 
-with linear ramps $\Omega(t) = \Delta(t) = t$, $\hat{n}_i = (1 - Z_i)/2$ the Rydberg
-occupation, $r_{ij}$ the distance between atoms and $C_6$ the `scaling_factor`
+with linear ramps $\Omega(t) = \Delta(t) = t$, $`\hat{n}_i = (1 - Z_i)/2`$ the Rydberg
+occupation, $`r_{ij}`$ the distance between atoms and $C_6$ the `scaling_factor`
 (1.0). The evolution runs from $t = 0$ to $T = 2.5$ as first-order Trotter steps
 of $\delta t = 0.05$, with $H$ frozen at the start of each step.
 
