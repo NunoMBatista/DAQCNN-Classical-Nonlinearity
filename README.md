@@ -43,7 +43,9 @@ included; the commands below regenerate them.
 Each kernel places 9 atoms at the coordinates of its topology and evolves them
 under
 
-$$H(t) = \frac{\Omega(t)}{2} \sum_i X_i \;-\; \Delta(t) \sum_i \hat{n}_i \;+\; \sum_{i < j} \frac{C_6}{r_{ij}^6} \, \hat{n}_i \hat{n}_j$$
+```math
+H(t) = \frac{\Omega(t)}{2} \sum_i X_i \;-\; \Delta(t) \sum_i \hat{n}_i \;+\; \sum_{i < j} \frac{C_6}{r_{ij}^6} \, \hat{n}_i \hat{n}_j
+```
 
 with linear ramps $\Omega(t) = \Delta(t) = t$, $\hat{n}_i = (1 - Z_i)/2$ the Rydberg
 occupation, $r_{ij}$ the distance between atoms and $C_6$ the `scaling_factor`
@@ -62,7 +64,9 @@ nine values $x_i$.
 
 After the evolution the features are
 
-$$\langle Z_i \rangle \quad \text{for all qubits } i, \qquad \langle Z_i Z_j \rangle \quad \text{for all pairs } i < j,$$
+```math
+\langle Z_i \rangle \quad \text{for all qubits } i, \qquad \langle Z_i Z_j \rangle \quad \text{for all pairs } i < j,
+```
 
 $9 + \binom{9}{2} = 45$ per patch and topology (9 without the correlators, "Z-only").
 The paper finds that the gain from the $\langle Z_i Z_j\rangle$ terms is mostly
@@ -74,7 +78,9 @@ image with stride 3 each channel is a 9x9 map.
 
 The end-to-end models train
 
-$$\text{Conv}_{2 \times 2}\text{-BN-Act} \;\to\; \text{MaxPool} \;\to\; \text{Conv}_{2 \times 2}\text{-Act} \;\to\; \text{Dropout} \;\to\; \text{Flatten} \;\to\; \text{Dropout} \;\to\; \text{Linear}(d, C)$$
+```math
+\text{Conv}_{2 \times 2}\text{-BN-Act} \;\to\; \text{MaxPool} \;\to\; \text{Conv}_{2 \times 2}\text{-Act} \;\to\; \text{Dropout} \;\to\; \text{Flatten} \;\to\; \text{Dropout} \;\to\; \text{Linear}(d, C)
+```
 
 with 64 channels; the quantum kernels are never trained. The head-capacity
 sweep uses a linear head, MLPs with one and two hidden layers, and this head
